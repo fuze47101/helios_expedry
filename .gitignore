@@ -1,0 +1,5 @@
+.DS_Store
+*.3mf
+*.gcode
+*.gcode.3mf
+*.stl
