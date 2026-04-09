@@ -1,0 +1,52 @@
+#:import theme utils.theme
+
+<WarningDialog>:
+    auto_dismiss: False
+    title: 'Unsaved Data'
+    size_hint: None, None
+    size: sp(550), sp(300)
+    background: ''
+    background_color: theme.bg_color
+    separator_color: theme.stop_color
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(20)
+        spacing: sp(15)
+
+        Label:
+            font_size: sp(22)
+            text: 'You have unsaved test data.\nStarting a new test will discard it.'
+            bold: True
+            halign: 'center'
+            text_size: self.size
+            valign: 'middle'
+            color: theme.text_color
+
+        Widget:
+
+        BoxLayout:
+            size_hint_y: None
+            height: sp(60)
+            spacing: sp(15)
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(20)
+                text: "SAVE FIRST"
+                on_release: root.save_first()
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(20)
+                text: "CANCEL"
+                on_release: root.dismiss()
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1.2
+                font_size: sp(20)
+                text: "DISCARD & START"
+                bold: True
+                on_release: root.discard_and_start()

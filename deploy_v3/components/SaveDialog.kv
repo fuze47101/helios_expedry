@@ -1,0 +1,75 @@
+#:import theme utils.theme
+
+<SaveDialog>:
+    auto_dismiss: False
+    title: 'Save Test Data'
+    size_hint: None, None
+    size: sp(600), sp(400)
+    background: ''
+    background_color: theme.bg_color
+    separator_color: theme.go_color
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(20)
+        spacing: sp(15)
+
+        # Status
+        Label:
+            font_size: sp(20)
+            text: root.status
+            bold: True
+            color: theme.go_color if 'Saved' in root.status else theme.text_color
+            size_hint_y: None
+            height: sp(40)
+
+        # Drive list
+        BoxLayout:
+            orientation: 'vertical'
+            spacing: sp(5)
+            Label:
+                text: 'Available Drives:'
+                font_size: sp(18)
+                bold: True
+                size_hint_y: None
+                height: sp(30)
+                text_size: self.size
+                halign: 'left'
+            ScrollView:
+                size_hint_y: 1
+                BoxLayout:
+                    orientation: 'vertical'
+                    size_hint_y: None
+                    height: self.minimum_height
+                    spacing: sp(5)
+
+        Widget:
+            size_hint_y: None
+            height: sp(10)
+
+        # Buttons
+        BoxLayout:
+            size_hint_y: None
+            height: sp(60)
+            spacing: sp(15)
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(22)
+                text: "REFRESH"
+                on_release: root.scan_drives()
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(22)
+                text: "CANCEL"
+                on_release: root.dismiss()
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1.5
+                font_size: sp(24)
+                text: "SAVE"
+                bold: True
+                on_release: root.save()

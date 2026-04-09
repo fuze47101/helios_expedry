@@ -1,0 +1,94 @@
+#:import theme utils.theme
+
+<Controls>:
+    orientation: 'vertical'
+    spacing: sp(6)
+    padding: sp(5)
+
+    # External Humidifier
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: sp(40)
+        Label:
+            text: 'Ext Hum'
+            font_size: sp(16)
+            bold: True
+            size_hint_x: .6
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        NeuRoundedButton:
+            size_hint_x: .4
+            size_hint_y: 1
+            text: 'ON' if root.hum1_status else 'OFF'
+            bold: True
+            font_size: sp(16)
+            background_color: theme.go_color if root.hum1_status else theme.dark_color
+            on_release: root.hum1_status = not root.hum1_status
+
+    # Internal Humidifier
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: sp(40)
+        Label:
+            text: 'Int Hum'
+            font_size: sp(16)
+            bold: True
+            size_hint_x: .6
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        NeuRoundedButton:
+            size_hint_x: .4
+            size_hint_y: 1
+            text: 'ON' if root.hum2_status else 'OFF'
+            bold: True
+            font_size: sp(16)
+            background_color: theme.go_color if root.hum2_status else theme.dark_color
+            on_release: root.hum2_status = not root.hum2_status
+
+    # Fan
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: sp(40)
+        Label:
+            text: 'Fan'
+            font_size: sp(16)
+            bold: True
+            size_hint_x: .6
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        NeuRoundedButton:
+            size_hint_x: .4
+            size_hint_y: 1
+            text: 'ON' if root.fan_status else 'OFF'
+            bold: True
+            font_size: sp(16)
+            background_color: theme.go_color if root.fan_status else theme.dark_color
+            on_release: root.fan_status = not root.fan_status
+
+    # Heater
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: sp(40)
+        Label:
+            text: 'Heater'
+            font_size: sp(16)
+            bold: True
+            size_hint_x: .6
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        NeuRoundedButton:
+            size_hint_x: .4
+            size_hint_y: 1
+            text: 'ON' if root.heat_status else 'OFF'
+            bold: True
+            font_size: sp(16)
+            background_color: theme.stop_color if root.heat_status else theme.dark_color
+            on_release: root.heat_status = not root.heat_status

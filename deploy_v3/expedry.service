@@ -1,0 +1,20 @@
+[Unit]
+Description=ExpeDRY Test System GUI
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+User=allied2
+Group=allied2
+WorkingDirectory=/home/allied2/FeatherV2
+ExecStart=/usr/bin/python3 /home/allied2/FeatherV2/main.py
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/allied2
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=append:/home/allied2/FeatherV2/expedry.log
+StandardError=append:/home/allied2/FeatherV2/expedry.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,158 @@
+#:import theme utils.theme
+
+<Test_Settings>:
+    orientation: 'vertical'
+    spacing: sp(8)
+    padding: sp(5)
+
+    # Duration
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: sp(45)
+        Label:
+            text: 'Duration (min):'
+            font_size: sp(16)
+            bold: True
+            size_hint_x: .6
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        NeuRoundedButton:
+            size_hint_x: None
+            width: sp(40)
+            size_hint_y: 1
+            text: '-'
+            font_size: sp(22)
+            bold: True
+            disabled: root.running
+            on_release: root.duration = max(1, root.duration - 1)
+        Label:
+            text: str(int(root.duration))
+            font_size: sp(22)
+            bold: True
+            size_hint_x: None
+            width: sp(50)
+        NeuRoundedButton:
+            size_hint_x: None
+            width: sp(40)
+            size_hint_y: 1
+            text: '+'
+            font_size: sp(22)
+            bold: True
+            disabled: root.running
+            on_release: root.duration = min(120, root.duration + 1)
+
+    # Interval
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: sp(45)
+        Label:
+            text: 'Interval (sec):'
+            font_size: sp(16)
+            bold: True
+            size_hint_x: .6
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        NeuRoundedButton:
+            size_hint_x: None
+            width: sp(40)
+            size_hint_y: 1
+            text: '-'
+            font_size: sp(22)
+            bold: True
+            disabled: root.running
+            on_release: root.interval = max(5, root.interval - 5)
+        Label:
+            text: str(int(root.interval))
+            font_size: sp(22)
+            bold: True
+            size_hint_x: None
+            width: sp(50)
+        NeuRoundedButton:
+            size_hint_x: None
+            width: sp(40)
+            size_hint_y: 1
+            text: '+'
+            font_size: sp(22)
+            bold: True
+            disabled: root.running
+            on_release: root.interval = min(60, root.interval + 5)
+
+    # Endpoint
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: sp(45)
+        Label:
+            text: 'Endpoint (%):'
+            font_size: sp(16)
+            bold: True
+            size_hint_x: .6
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        NeuRoundedButton:
+            size_hint_x: None
+            width: sp(40)
+            size_hint_y: 1
+            text: '-'
+            font_size: sp(22)
+            bold: True
+            disabled: root.running
+            on_release: root.endpoint = max(10, root.endpoint - 5)
+        Label:
+            text: str(int(root.endpoint))
+            font_size: sp(22)
+            bold: True
+            size_hint_x: None
+            width: sp(50)
+        NeuRoundedButton:
+            size_hint_x: None
+            width: sp(40)
+            size_hint_y: 1
+            text: '+'
+            font_size: sp(22)
+            bold: True
+            disabled: root.running
+            on_release: root.endpoint = min(90, root.endpoint + 5)
+
+    # Switchover point
+    BoxLayout:
+        orientation: 'horizontal'
+        size_hint_y: None
+        height: sp(45)
+        Label:
+            text: 'SW Point (%):'
+            font_size: sp(16)
+            bold: True
+            size_hint_x: .6
+            text_size: self.size
+            halign: 'left'
+            valign: 'middle'
+        NeuRoundedButton:
+            size_hint_x: None
+            width: sp(40)
+            size_hint_y: 1
+            text: '-'
+            font_size: sp(22)
+            bold: True
+            disabled: root.running
+            on_release: root.sw_point = max(0, root.sw_point - 5)
+        Label:
+            text: str(int(root.sw_point))
+            font_size: sp(22)
+            bold: True
+            size_hint_x: None
+            width: sp(50)
+        NeuRoundedButton:
+            size_hint_x: None
+            width: sp(40)
+            size_hint_y: 1
+            text: '+'
+            font_size: sp(22)
+            bold: True
+            disabled: root.running
+            on_release: root.sw_point = min(100, root.sw_point + 5)

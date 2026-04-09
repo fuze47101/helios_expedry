@@ -1,0 +1,151 @@
+#:import theme utils.theme
+
+<NetworkItem@BoxLayout>:
+    orientation: 'horizontal'
+    size_hint_y: None
+    height: sp(55)
+    spacing: sp(10)
+    ssid: ''
+    signal: ''
+    security: ''
+    NeuRoundedButton:
+        size_hint_x: 1
+        size_hint_y: 1
+        font_size: sp(22)
+        bold: True
+        text: root.ssid
+        on_release: app.root.ids  # placeholder — connect handled in dialog
+    Label:
+        size_hint_x: None
+        width: sp(60)
+        font_size: sp(18)
+        text: root.signal + '%'
+        bold: True
+        color: theme.go_color if int(root.signal or '0') > 50 else theme.dry_color
+    Label:
+        size_hint_x: None
+        width: sp(40)
+        font_size: sp(14)
+        text: '🔒' if root.security else ''
+
+<WifiDialog>:
+    auto_dismiss: False
+    title: 'WiFi Settings'
+    size_hint: None, None
+    size: sp(650), sp(650)
+    background: ''
+    background_color: theme.bg_color
+    separator_color: theme.accent_color
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(15)
+        spacing: sp(12)
+
+        # Current connection status
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(50)
+            spacing: sp(10)
+            Label:
+                text: 'Connected:'
+                font_size: sp(20)
+                bold: True
+                size_hint_x: None
+                width: sp(130)
+            Label:
+                text: root.current_ssid
+                font_size: sp(22)
+                bold: True
+                color: theme.go_color if root.is_connected else theme.stop_color
+            Label:
+                text: root.current_ip
+                font_size: sp(18)
+                size_hint_x: None
+                width: sp(160)
+                color: theme.go_color if root.is_connected else theme.idle_color
+
+        # Status text
+        Label:
+            font_size: sp(18)
+            text: root.status_text
+            bold: True
+            color: theme.go_color if 'Connected' in root.status_text else theme.text_color
+            size_hint_y: None
+            height: sp(30)
+
+        # Password input row
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(50)
+            spacing: sp(10)
+            Label:
+                text: 'Password:'
+                font_size: sp(20)
+                bold: True
+                size_hint_x: None
+                width: sp(120)
+            NeuCard:
+                radius: sp(10)
+                comp_color: [1,1,1,1]
+                light_color: [0.14, 0.15, 0.18]
+                dark_color: [0.54, 0.55, 0.58]
+                padding: sp(5)
+                TextInput:
+                    id: wifi_password
+                    background_color: [1,1,1,1]
+                    background_normal: ''
+                    background_active: ''
+                    cursor_color: [0,0,0,1]
+                    font_size: sp(22)
+                    password: True
+                    multiline: False
+                    hint_text: 'Enter password'
+
+        # Network list
+        Label:
+            text: 'Available Networks:'
+            font_size: sp(18)
+            bold: True
+            size_hint_y: None
+            height: sp(25)
+            text_size: self.size
+            halign: 'left'
+
+        ScrollView:
+            size_hint_y: 1
+            bar_width: sp(8)
+            BoxLayout:
+                id: network_list
+                orientation: 'vertical'
+                size_hint_y: None
+                height: self.minimum_height
+                spacing: sp(5)
+
+        # Buttons
+        BoxLayout:
+            size_hint_y: None
+            height: sp(60)
+            spacing: sp(10)
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(20)
+                text: "SCAN"
+                on_release: root.scan()
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(20)
+                text: "DISCONNECT"
+                on_release: root.disconnect()
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(20)
+                text: "CLOSE"
+                on_release: root.dismiss()

@@ -3,3 +3,5 @@
 *.gcode
 *.gcode.3mf
 *.stl
+__pycache__/
+*.pyc
