@@ -359,10 +359,20 @@
 
             Widget:
 
+            # Hardware test button
+            NeuRoundedButton:
+                size_hint_x: None
+                width: sp(70)
+                size_hint_y: 1
+                bold: True
+                font_size: sp(14)
+                text: 'TEST'
+                on_release: root.hardware_test()
+
             # Settings / WiFi button
             NeuRoundedButton:
                 size_hint_x: None
-                width: sp(80)
+                width: sp(70)
                 size_hint_y: 1
                 bold: True
                 font_size: sp(16)

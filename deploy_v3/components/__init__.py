@@ -1,5 +1,6 @@
 from components.Controls import Controls
 from components.SaveDialog import SaveDialog
+from components.SetupWizard import SetupWizard
 from components.WarningDialog import WarningDialog
 from components.WeighDialog import WeighDialog
 from components.WifiDialog import WifiDialog

@@ -16,6 +16,8 @@ Config.set('graphics', 'fullscreen', 'auto')
 from camera import thermalcameraController, guiController
 from components import SaveDialog, WarningDialog, WeighDialog, WifiDialog
 from utils import theme, Relay, RS485, Scale
+from utils.EmailReport import send_test_report
+from utils.AtlasUpload import post_test_results
 
 from kivy.app import App
 from neukivy.app import NeuApp
@@ -80,6 +82,15 @@ class FeatherInterface(FloatLayout):
     end_weight = NumericProperty(0.0)
     weight_delta = NumericProperty(0.0)
     max_weight = NumericProperty(0.0)
+    _start_weight_set = False
+
+    # ── Test setup wizard parameters ──
+    wet_time = NumericProperty(10)           # wetting cycle minutes
+    dry_time = NumericProperty(10)           # dry cycle minutes
+    humidity_setpoint = NumericProperty(60)  # target humidity %
+    external_hum = BooleanProperty(True)     # hum1 (relay 1) — external/environmental humidity
+    internal_hum = BooleanProperty(True)     # hum2 (relay 2) — internal/direct chamber humidity
+    heat_mode = StringProperty('Off')        # Off, Wet Only, Dry Only, Both
     test_phase = StringProperty('IDLE')
     weight_data = []
     weight_plot = LinePlot(line_width=3, color=theme.weight_color)
@@ -109,7 +120,11 @@ class FeatherInterface(FloatLayout):
         if self.scale_connected:
             w = self.scale.read()
             self.current_weight = round(w, 3)
-            self.weight_delta = round(w - self.start_weight, 3)
+            # Only show delta once start_weight has been set (via tare or test start)
+            if self._start_weight_set:
+                self.weight_delta = round(w - self.start_weight, 3)
+            else:
+                self.weight_delta = 0.0
             if self.running and w > self.max_weight:
                 self.max_weight = w
 
@@ -136,9 +151,9 @@ class FeatherInterface(FloatLayout):
     def on_test_mode(self, instance, value):
         match self.test_mode:
             case 'Movement':
-                self.mode_display = 'Moisture Movement'
+                self.mode_display = 'Moisture Movement (Absorption)'
             case 'Resistance':
-                self.mode_display = 'Moisture Resistance'
+                self.mode_display = 'Moisture Resistance (Down)'
             case 'Dry_Thermal':
                 self.mode_display = 'Dry Thermal'
             case 'Wet_Thermal':
@@ -175,6 +190,23 @@ class FeatherInterface(FloatLayout):
                     current_temp = data[0]
                     current_humd = data[1]
                     self.update_labels(current_temp, current_humd, power_data)
+
+                    # ── Humidity setpoint hold during WETTING phase ──
+                    if self.running and self.test_phase == 'WETTING':
+                        setpoint = getattr(self, 'humidity_setpoint', 60)
+                        if current_humd >= setpoint:
+                            # Above setpoint — kill humidifiers
+                            if self.hum1_status and getattr(self, 'external_hum', True):
+                                self.hum1_status = False
+                            if self.hum2_status and getattr(self, 'internal_hum', True):
+                                self.hum2_status = False
+                        else:
+                            # Below setpoint — turn humidifiers back on per wizard config
+                            if getattr(self, 'external_hum', True) and not self.hum1_status:
+                                self.hum1_status = True
+                            if getattr(self, 'internal_hum', True) and not self.hum2_status:
+                                self.hum2_status = True
+
                     time.sleep(.9)
                 except Exception as e:
                     print(e)
@@ -200,15 +232,12 @@ class FeatherInterface(FloatLayout):
             self.heat_status = False
 
     def proceed(self, *args):
-        if self.test_mode == self.test_types[0] or self.test_mode == self.test_types[1]:
-            if not self.drying:
-                p = Factory.WeighDialog()
-                p.finished = False
-                p.open()
-            else:
-                self.restart()
+        if self.drying:
+            # Resuming dry-back phase — skip wizard
+            self.restart()
         else:
-            self.start_test()
+            # Open setup wizard for all test types
+            Factory.SetupWizard().open()
 
     def start_test(self, *args):
         self.running = not self.running
@@ -225,12 +254,16 @@ class FeatherInterface(FloatLayout):
             self.weight_data = []
             self.dry_back_time = '--:--'
             self.dry_back_seconds = 0
+            self._wet_seconds = self.wet_time * 60
+            self._dry_seconds = self.dry_time * 60
+            # Total duration for the full test
+            self.duration = self.wet_time + self.dry_time
             # Clear both graphs
             self.ids.graph_test.remove_plot(self.plot)
             self.ids.graph_weight.remove_plot(self.weight_plot)
             self.can_save = False
-            self.test_phase = 'WET'
-            self.handle_outputs()
+            self.test_phase = 'WETTING'
+            self._apply_phase_outputs()
             threading.Thread(target=self.update_time, daemon=True).start()
 
     def restart(self, *args):
@@ -298,13 +331,140 @@ class FeatherInterface(FloatLayout):
     @mainthread
     def update_time_label(self):
         self.current_time = str(datetime.timedelta(seconds=self.elapsed_time))
-        if self.elapsed_time == self.duration * 60:
+
+        # ── Phase transitions based on wizard timers ──
+        total_seconds = self.duration * 60
+
+        # Wet → Dry transition
+        if (self.test_phase == 'WETTING'
+                and self.elapsed_time >= self._wet_seconds):
+            if self._dry_seconds > 0:
+                self.test_phase = 'DRYING'
+                self._apply_phase_outputs()
+            else:
+                # No dry cycle — test complete
+                self.finished = True
+                self.plot_data()
+                self._complete_test()
+                return
+
+        # Dry cycle ends on timer OR weight return to start
+        if self.test_phase == 'DRYING':
+            dry_elapsed = self.elapsed_time - self._wet_seconds
+            weight_returned = (self._start_weight_set
+                               and self.current_weight <= self.start_weight + 0.05)
+
+            if dry_elapsed >= self._dry_seconds or weight_returned:
+                self.finished = True
+                self.plot_data()
+                if weight_returned and dry_elapsed < self._dry_seconds:
+                    self.test_phase = 'DRY - WEIGHT RETURN'
+                self._complete_test()
+                return
+
+        # Test complete (safety fallback)
+        if self.elapsed_time >= total_seconds:
             self.finished = True
             self.plot_data()
-            self.handle_outputs()
+            self._complete_test()
         elif self.elapsed_time % self.interval == 0:
             self.plot_data()
+
         self.elapsed_time += 1
+
+    @mainthread
+    def _apply_phase_outputs(self):
+        """Set relay outputs based on current test_phase and wizard settings."""
+        heat_mode = getattr(self, 'heat_mode', 'Off')
+
+        if self.test_phase == 'WETTING':
+            # hum1 = external humidity, hum2 = internal humidity
+            self.hum1_status = getattr(self, 'external_hum', True)
+            time.sleep(0.2)
+            self.hum2_status = getattr(self, 'internal_hum', True)
+            self.fan_status = False
+            # Heat during wet?
+            self.heat_status = heat_mode in ('Wet Only', 'Both')
+
+        elif self.test_phase == 'DRYING':
+            # All humidifiers OFF, exhaust fan ON
+            self.hum1_status = False
+            time.sleep(0.2)
+            self.hum2_status = False
+            time.sleep(0.2)
+            self.fan_status = True
+            # Heat during dry?
+            self.heat_status = heat_mode in ('Dry Only', 'Both')
+
+    @mainthread
+    def _complete_test(self):
+        """Shut everything down, mark complete, email report, upload to Atlas."""
+        self.running = False
+        self.hum1_status = False
+        self.hum2_status = False
+        self.fan_status = False
+        self.heat_status = False
+        if self.test_phase not in ('DRY - WEIGHT RETURN',):
+            self.test_phase = 'COMPLETE'
+        self.can_save = True if self.data_save else False
+
+        # ── Send report in background thread ──
+        threading.Thread(target=self._send_results, daemon=True).start()
+
+    def _send_results(self):
+        """Email report via Resend and upload to Atlas (runs in background)."""
+        try:
+            # Compute averages from data_save
+            avg_temp = 0
+            avg_humid = 0
+            if self.data_save:
+                temps = [d[2] for d in self.data_save if len(d) > 2]
+                humids = [d[1] for d in self.data_save if len(d) > 1]
+                if temps:
+                    avg_temp = sum(temps) / len(temps)
+                if humids:
+                    avg_humid = sum(humids) / len(humids)
+
+            test_data = {
+                'test_mode': self.mode_display,
+                'start_weight': self.start_weight,
+                'end_weight': self.current_weight,
+                'weight_delta': self.weight_delta,
+                'max_weight': self.max_weight,
+                'avg_temp': avg_temp,
+                'avg_humidity': avg_humid,
+                'duration_seconds': self.elapsed_time,
+                'test_phase': self.test_phase,
+                'data_points': self.data_save,
+            }
+            settings = {
+                'wet_time': getattr(self, 'wet_time', 0),
+                'dry_time': getattr(self, 'dry_time', 0),
+                'humidity_setpoint': getattr(self, 'humidity_setpoint', 0),
+                'external_hum': getattr(self, 'external_hum', False),
+                'internal_hum': getattr(self, 'internal_hum', False),
+                'heat_mode': getattr(self, 'heat_mode', 'Off'),
+            }
+
+            # 1. Email report
+            print('[REPORT] Sending email...')
+            email_result = send_test_report(
+                to='andrew@fuzebiotech.com',
+                test_data=test_data,
+                settings=settings,
+            )
+            print(f'[REPORT] Email: {email_result}')
+
+            # 2. Upload to Atlas
+            print('[REPORT] Uploading to Atlas...')
+            atlas_result = post_test_results(
+                test_data=test_data,
+                settings=settings,
+            )
+            print(f'[REPORT] Atlas: {atlas_result}')
+
+        except Exception as e:
+            print(f'[REPORT] Error sending results: {e}')
 
     @mainthread
     def handle_outputs(self, *args):
@@ -396,6 +556,93 @@ class FeatherInterface(FloatLayout):
                 time.sleep(.2)
                 self.fan_status = False
 
+    def hardware_test(self, *args):
+        """Run a 15-second hardware diagnostic cycling through all outputs and sensors."""
+        if self.running:
+            return
+        self.test_phase = 'HW TEST'
+        threading.Thread(target=self._run_hardware_test, daemon=True).start()
+
+    def _run_hardware_test(self):
+        """Background thread: cycle each component for 15 seconds to verify operation."""
+        try:
+            # 1. External humidity — 15 sec
+            self._hw_test_update('EXT HUMIDITY (1/6) — 15s')
+            self.hum1_status = True
+            for i in range(15, 0, -1):
+                self._hw_test_update(f'EXT HUMIDITY (1/6) — {i}s')
+                time.sleep(1)
+            self.hum1_status = False
+            time.sleep(0.5)
+
+            # 2. Internal humidity — 15 sec
+            self._hw_test_update('INT HUMIDITY (2/6) — 15s')
+            self.hum2_status = True
+            for i in range(15, 0, -1):
+                self._hw_test_update(f'INT HUMIDITY (2/6) — {i}s')
+                time.sleep(1)
+            self.hum2_status = False
+            time.sleep(0.5)
+
+            # 3. Exhaust fan — 15 sec
+            self._hw_test_update('EXHAUST FAN (3/6) — 15s')
+            self.fan_status = True
+            for i in range(15, 0, -1):
+                self._hw_test_update(f'EXHAUST FAN (3/6) — {i}s')
+                time.sleep(1)
+            self.fan_status = False
+            time.sleep(0.5)
+
+            # 4. Column heat — 15 sec
+            self._hw_test_update('COLUMN HEAT (4/6) — 15s')
+            self.heat_status = True
+            for i in range(15, 0, -1):
+                self._hw_test_update(f'COLUMN HEAT (4/6) — {i}s')
+                time.sleep(1)
+            self.heat_status = False
+            time.sleep(0.5)
+
+            # 5. Scale — 15 sec of readings
+            self._hw_test_update('SCALE (5/6) — reading...')
+            readings = []
+            for i in range(15, 0, -1):
+                w = self.scale.read() if self.scale_connected else -1
+                readings.append(w)
+                self._hw_test_update(f'SCALE (5/6) — {w:.3f}g — {i}s')
+                time.sleep(1)
+            scale_ok = self.scale_connected and len(readings) > 0
+            if readings:
+                avg_w = sum(readings) / len(readings)
+                spread = max(readings) - min(readings)
+                self._hw_test_update(f'SCALE: avg={avg_w:.3f}g spread={spread:.3f}g')
+            time.sleep(2)
+
+            # 6. Sensors + camera check — 15 sec
+            self._hw_test_update('SENSORS + CAM (6/6) — checking...')
+            cam_ok = hasattr(self, 'capture') and self.capture.isOpened()
+            sensor_ok = self.connected
+            for i in range(15, 0, -1):
+                t = self.current_temp
+                h = self.current_humd
+                self._hw_test_update(f'CAM:{"OK" if cam_ok else "FAIL"} T:{t:.1f}C H:{h:.1f}% — {i}s')
+                time.sleep(1)
+
+            # Final summary
+            results = []
+            results.append(f'CAM:{"OK" if cam_ok else "FAIL"}')
+            results.append(f'SCALE:{"OK" if scale_ok else "FAIL"}')
+            results.append(f'SENSOR:{"OK" if sensor_ok else "FAIL"}')
+            self._hw_test_update('DONE — ' + ' '.join(results))
+            time.sleep(5)
+
+            self._hw_test_update('IDLE')
+        except Exception as e:
+            self._hw_test_update(f'ERROR: {e}')
+
+    @mainthread
+    def _hw_test_update(self, msg):
+        self.test_phase = msg
+
     def save_test(self, *args):
         Factory.SaveDialog().open()
 
@@ -426,12 +673,11 @@ class FeatherInterface(FloatLayout):
         self.ids.camera_display.texture = texture1
 
     def tare_scale(self, *args):
-        """Tare the scale and reset start weight."""
+        """Capture current weight as the start/reference weight."""
         if self.scale_connected:
-            self.scale.tare()
-            time.sleep(1.5)
-            self.start_weight = self.scale.read()
+            self.start_weight = round(self.scale.read(), 3)
             self.weight_delta = 0.0
+            self._start_weight_set = True
 
 class TesterApp(NeuApp):
     def build(self):

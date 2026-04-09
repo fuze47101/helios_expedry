@@ -116,12 +116,18 @@ class WifiDialog(Popup):
         self.status_text = 'Scanning...'
         self.networks = []
         try:
-            # Force a rescan
             subprocess.run(
                 ['nmcli', 'dev', 'wifi', 'rescan'],
                 capture_output=True, timeout=10
             )
-            # List networks
+        except Exception:
+            pass
+        # Wait 2 sec for scan to complete, then fetch results (non-blocking)
+        Clock.schedule_once(self._fetch_networks, 2.0)
+
+    def _fetch_networks(self, dt):
+        """Fetch the network list after rescan completes."""
+        try:
             result = subprocess.run(
                 ['nmcli', '-t', '-f', 'SSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list'],
                 capture_output=True, text=True, timeout=10
@@ -129,11 +135,13 @@ class WifiDialog(Popup):
             seen = set()
             nets = []
             for line in result.stdout.strip().split('\n'):
+                if not line.strip():
+                    continue
                 parts = line.split(':')
                 if len(parts) >= 2:
-                    ssid = parts[0].strip()
-                    signal = parts[1].strip() if len(parts) > 1 else '0'
-                    security = parts[2].strip() if len(parts) > 2 else ''
+                    security = parts[-1].strip() if len(parts) >= 3 else ''
+                    signal = parts[-2].strip() if len(parts) >= 3 else parts[-1].strip()
+                    ssid = ':'.join(parts[:-2]).strip() if len(parts) >= 3 else parts[0].strip()
                     if ssid and ssid not in seen:
                         seen.add(ssid)
                         nets.append({
@@ -141,7 +149,6 @@ class WifiDialog(Popup):
                             'signal': signal,
                             'security': security
                         })
-            # Sort by signal strength descending
             nets.sort(key=lambda x: int(x['signal']) if x['signal'].isdigit() else 0, reverse=True)
             self.networks = nets
             self.status_text = f'Found {len(nets)} network(s)'
@@ -151,21 +158,44 @@ class WifiDialog(Popup):
             self.status_text = f'Scan error: {e}'
 
     def connect(self, ssid, password=''):
-        """Connect to a WiFi network."""
+        """Connect to a WiFi network using nmcli connection profiles.
+        Uses 'nmcli c add' + 'nmcli c up' instead of 'nmcli dev wifi connect'
+        to avoid WPA2/WPA3 mixed-mode 'key-mgmt missing' errors.
+        """
         self.status_text = f'Connecting to {ssid}...'
         try:
-            cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid]
+            # Clean up any existing connection profile with this name
+            con_name = f'expedry-{ssid.replace(" ", "_")}'
+            subprocess.run(
+                ['nmcli', 'c', 'delete', con_name],
+                capture_output=True, timeout=10
+            )
+            # Create connection profile
+            cmd = [
+                'nmcli', 'c', 'add', 'type', 'wifi',
+                'ifname', 'wlan0', 'con-name', con_name,
+                'ssid', ssid
+            ]
             if password:
-                cmd += ['password', password]
+                cmd += ['--', 'wifi-sec.key-mgmt', 'wpa-psk',
+                        'wifi-sec.psk', password]
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30
+                cmd, capture_output=True, text=True, timeout=15
+            )
+            if result.returncode != 0:
+                err = result.stderr.strip() or result.stdout.strip()
+                self.status_text = f'Failed: {err[:60]}'
+                return
+            # Activate the connection
+            result = subprocess.run(
+                ['nmcli', 'c', 'up', con_name],
+                capture_output=True, text=True, timeout=30
             )
             if result.returncode == 0:
                 self.status_text = f'Connected to {ssid}'
                 self.is_connected = True
                 self.current_ssid = ssid
-                # Update IP after short delay
-                Clock.schedule_once(lambda dt: self._get_current_connection(), 2)
+                Clock.schedule_once(lambda dt: self._get_current_connection(), 3)
             else:
                 err = result.stderr.strip() or result.stdout.strip()
                 self.status_text = f'Failed: {err[:60]}'

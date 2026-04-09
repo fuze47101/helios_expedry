@@ -1,0 +1,146 @@
+#:import theme utils.theme
+
+<SetupWizard>:
+    title: 'Test Setup'
+    title_size: sp(24)
+    title_color: 1, 1, 1, 1
+    size_hint: 0.85, 0.75
+    auto_dismiss: False
+    separator_color: theme.go_color
+    background_color: 0.14, 0.15, 0.18, 1
+
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(12)
+        spacing: sp(10)
+
+        # Step indicator
+        Label:
+            text: f'Step {root.step + 1} of {root.step_count}'
+            font_size: sp(16)
+            color: 0.6, 0.6, 0.6, 1
+            size_hint_y: None
+            height: sp(22)
+
+        # Step title
+        Label:
+            text: root.step_title
+            font_size: sp(26)
+            bold: True
+            color: 1, 1, 1, 1
+            size_hint_y: None
+            height: sp(36)
+
+        # Description
+        Label:
+            text: root.step_description
+            font_size: sp(16)
+            color: 0.7, 0.7, 0.7, 1
+            size_hint_y: None
+            height: sp(26)
+
+        # Value display
+        Label:
+            text: root.step_value
+            font_size: sp(36) if root.step < root.step_count - 1 else sp(22)
+            bold: True
+            color: theme.go_color
+            halign: 'center'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(60) if root.step < root.step_count - 1 else sp(100)
+
+        # Control buttons row (hidden on confirm step)
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(65)
+            spacing: sp(8)
+            padding: [sp(10), 0]
+            opacity: 0 if root.step == root.step_count - 1 else 1
+            disabled: root.step == root.step_count - 1
+
+            # -5 button
+            Button:
+                text: '-5'
+                font_size: sp(28)
+                bold: True
+                size_hint_x: 1
+                background_normal: ''
+                background_color: 0.4, 0.2, 0.2, 1
+                color: 1, 1, 1, 1
+                on_release: root.decrement_big()
+
+            # -1 button
+            Button:
+                text: '-1'
+                font_size: sp(28)
+                bold: True
+                size_hint_x: 1
+                background_normal: ''
+                background_color: 0.3, 0.3, 0.35, 1
+                color: 1, 1, 1, 1
+                on_release: root.decrement()
+
+            # +1 button
+            Button:
+                text: '+1'
+                font_size: sp(28)
+                bold: True
+                size_hint_x: 1
+                background_normal: ''
+                background_color: 0.3, 0.3, 0.35, 1
+                color: 1, 1, 1, 1
+                on_release: root.increment()
+
+            # +5 button
+            Button:
+                text: '+5'
+                font_size: sp(28)
+                bold: True
+                size_hint_x: 1
+                background_normal: ''
+                background_color: 0.2, 0.4, 0.2, 1
+                color: 1, 1, 1, 1
+                on_release: root.increment_big()
+
+        # Spacer
+        Widget:
+            size_hint_y: 1
+
+        # Navigation buttons
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(55)
+            spacing: sp(12)
+
+            Button:
+                text: 'Cancel'
+                font_size: sp(20)
+                bold: True
+                background_normal: ''
+                background_color: 0.3, 0.3, 0.35, 1
+                color: 1, 1, 1, 1
+                on_release: root.dismiss()
+
+            Button:
+                text: 'Back'
+                font_size: sp(20)
+                bold: True
+                background_normal: ''
+                background_color: 0.3, 0.3, 0.35, 1
+                color: 1, 1, 1, 1
+                disabled: root.step == 0
+                opacity: 0.4 if root.step == 0 else 1
+                on_release: root.prev_step()
+
+            Button:
+                text: 'Next' if root.step < root.step_count - 1 else 'START TEST'
+                font_size: sp(22)
+                bold: True
+                background_normal: ''
+                background_color: theme.go_color if root.step == root.step_count - 1 else (0.2, 0.5, 0.8, 1)
+                color: 1, 1, 1, 1
+                on_release: root.next_step()
