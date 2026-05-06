@@ -1,7 +1,20 @@
 # Memory
 
+## CRITICAL BRANDING / TERMINOLOGY (external-facing docs, decks, emails)
+- **NEVER use the words "silver" or "nano"** in any external-facing material. The chemistries are F1 and Helios. They are described as **meta-materials**, not silver nanoparticles.
+- **Helios is NOT silver.** Helios is one F1-family chemistry variant; both are meta-materials.
+- **Apparatus name**: "Solaris FZ-500 Apparatus" (never "the rig" in external docs — internal shorthand only)
+- **Company**: Legal entity is 801 Inc. External DBAs: **FUZE Technologies** (preferred for industry/partner-facing work like Nike), **FUZE Biotech** (biotech/science-forward contexts). Default to **FUZE Technologies** for partnership decks unless Andrew says otherwise.
+- **Andrew's email**: `andrew@fuze47.com` (NOT andrew@801inc.com)
+- **Nike context**: The April 2026 meeting is a **follow-up** to the Portland meeting from 2 weeks prior (early April 2026). Never frame it as a first pitch.
+
+## Solaris FZ-500 physical corrections (supersede earlier notes below)
+- **Heat plate**: 175mm × 175mm (NOT ~30×30cm)
+- **Air gap** (fabric top → plate surface): **45mm** (NOT 60mm — earlier docs were wrong)
+- **Sensing**: 1 Hz across 3 sensors (TC-A, TC-B on plate underside; DS18B20 in air gap). Emphasize sensor count and accuracy (±0.1 °C) in external material, NOT the Raspberry Pi or CSV plumbing.
+
 ## Me
-Andrew Peterson, CEO/Founder of FUZE Biotech (801 Inc). Building Expedry moisture resistance testing apparatus for down insulation treated with Expedry Gold.
+Andrew Peterson, CEO/Founder of 801 Inc (dba FUZE Technologies / FUZE Biotech). Building Expedry moisture resistance testing apparatus for down insulation treated with Expedry Gold, AND the Solaris FZ-500 IR characterization apparatus for F1 meta-material thermal fabrics.
 
 ## Preferences
 - Move fast — Portland show deadline NOW
@@ -255,6 +268,23 @@ Socket collar was disconnected from cage body by 0.35mm air gap. Added collar_br
 - Or add 5th relay channel if keeping existing humidifier wiring
 - Software: add pump prime cycle to test setup wizard
 
+## IR Camera Upgrade (TODO: Purchase next week)
+**Current camera**: InfiRay 256x192 USB thermal — likely blown/failing (showing insane temps, heatmap garbage)
+
+**Replacement: Sipeed T256s** — $219
+- 256x192 native LWIR + 640x480 AI upscaling (built-in 2.4 TOPS NPU)
+- UVC compatible — plug-and-play with Linux/OpenCV, no drivers needed
+- USB Type-C, 25 Hz frame rate, <50mK thermal sensitivity
+- Built-in touchscreen for standalone operation
+- Can record thermal video
+- **Buy from**: AliExpress — https://wiki.sipeed.com/hardware/en/ThermalCam/T256s/Intro.html
+- **Drop-in replacement** for current InfiRay — same resolution, same USB UVC protocol
+- OpenCV code in camera/thermalcameraController.py should work with minimal changes (may need to adjust frame split logic since T256s may not pack thermal data the same way as InfiRay)
+
+**Alternative if needed fast (Amazon Prime):**
+- InfiRay P2 Pro (~$200-300) — same 256x192 sensor but designed for phones, needs USB adapter, limited Linux support
+- Search: "InfiRay T2S+ USB thermal camera" for closest UVC-compatible module
+
 ## Known Issues / Open Items
 - **3mf export caching**: OpenSCAD sometimes exports from cached geometry. Must F4 (force reload) then F6 (full render) before exporting.
 - **Pan adapter**: Designed as replacement pan (Ø155mm) with center boss — needs caliper measurement of load cell pin
@@ -348,9 +378,395 @@ Socket collar was disconnected from cage body by 0.35mm air gap. Added collar_br
 - To add new network: `sudo nmcli dev wifi connect "SSID" password "PSK"`
 - After deploy_v3, WiFi can be managed from the touchscreen GUI
 
+## Solaris FZ-500 — IR Heat Deflection + Sweat Egress (STANDALONE SYSTEM)
+
+**This is a SEPARATE apparatus from Helios.** Separate Pi, separate sensors, separate purpose. Do NOT confuse with the Helios humidity chamber.
+
+### What It Is
+Combined solar-radiation + saturated-steam rig for FUZE-treated fabric performance testing. IR lamp heats a fabric sample from above (simulating sun), while steam rises from below (simulating body sweat). Measures whether FUZE treatment reduces plate temperature AND allows moisture to pass through.
+
+### Physical Layout (top to bottom)
+1. **175W halogen IR lamp** — ceramic socket, reflector housing in stainless shroud
+2. **Fabric sample** — laid on top of stainless aperture frame, ~25cm circular opening
+3. **~60mm air gap** — DS18B20 probe lives here (measures microclimate), SHT41 deferred to v2
+4. **Matte-black heat plate** — 6061 aluminum, ~30×30cm, high-emissivity top face
+5. **2× K-type TC** bonded to plate underside, diagonally opposite quadrants, 25–30% from edge
+6. **Stainless fixture** holds plate and aperture frame
+7. **[DEFERRED v2]** Steam plenum, aluminum post, vaporizer block, cartridge heater — not in Portland demo scope
+
+### Geometry Lock (MUST REPRODUCE ±5mm BETWEEN RUNS)
+| Measurement | Value |
+|---|---|
+| Lamp filament centerline → fabric top surface | **200mm** |
+| Lamp filament centerline → plate surface | **260mm** |
+| Fabric top → plate surface (air gap) | **~60mm** |
+| Plate aperture diameter | ~25cm (circular cutout in frame) |
+| TC bond position | diagonally opposite quadrants, 25-30% in from plate edge, underside |
+| DS18B20 position | inside aperture, suspended in air gap above plate, not touching |
+
+Irradiance governed by inverse-square; a 2cm lamp drift contaminates comparisons. Mark lamp and plate positions with tape on stand/table. Re-measure before every session and after any transport.
+
+### Solaris Pi 5 (STANDALONE — separate from Helios Pi)
+| Parameter | Value |
+|-----------|-------|
+| **Board** | Raspberry Pi 5 · 8GB RAM · CanaKit Starter Kit (128GB) |
+| **Hostname** | solaris |
+| **User** | fuze |
+| **Password** | Fuze47101 |
+| **OS** | Raspberry Pi OS Lite 64-bit (headless, no desktop) |
+| **SD Card** | 128GB from CanaKit kit |
+| **WiFi** | Flashed with FX4 / Jetflow101 (Andrew's hotspot) |
+| **SSH** | Enabled with password auth |
+| **Status** | FLASHED, BOOTING — need to SSH in and verify connection |
+
+### Current Pi IP (as of 2026-04-21 evening — office network)
+- **IP**: `10.100.102.92`
+- **Dashboard**: `http://10.100.102.92:5000/` (from any device on same network)
+- **SSH**: `ssh fuze@10.100.102.92`
+- Previous known IPs (for reference): `192.168.1.152` (home ISEEYOU2), hotspot-assigned (FX4)
+
+### WiFi Notes (Solaris Pi)
+- **Evoq-Biz / Allotrope#1** — office network, Pi 5 FAILED to connect (UniFi, possibly VLAN/policy issue). The other Helios Pi connects fine to this network, so it's specific to the Pi 5 or cloud-init config.
+- **FX4 / Jetflow101** — Andrew's phone hotspot, reflashed with this as primary
+- **ISEEYOU2 / Fuze47101** — home network, add after first SSH
+- Once SSH'd in, add networks: `sudo nmcli dev wifi connect "SSID" password "PSK"`
+
+### Sensor Wiring — Pi 5 GPIO
+| Device | Pi Pin | GPIO | Bus | Notes |
+|--------|--------|------|-----|-------|
+| MAX31855 #1 VCC | Pin 1 | 3V3 | Power | TC-A (heat plate) |
+| MAX31855 #1 GND | Pin 6 | GND | Power | |
+| MAX31855 #1 CLK | Pin 23 | GPIO 11 | SPI0 SCLK | |
+| MAX31855 #1 DO | Pin 21 | GPIO 9 | SPI0 MISO | |
+| MAX31855 #1 CS | Pin 24 | GPIO 8 | SPI0 CE0 | /dev/spidev0.0 |
+| MAX31855 #2 VCC | Pin 17 | 3V3 | Power | TC-B (heat plate) |
+| MAX31855 #2 GND | Pin 14 | GND | Power | |
+| MAX31855 #2 CLK | Pin 23 | GPIO 11 | SPI0 SCLK (shared) | |
+| MAX31855 #2 DO | Pin 21 | GPIO 9 | SPI0 MISO (shared) | |
+| MAX31855 #2 CS | Pin 26 | GPIO 7 | SPI0 CE1 | /dev/spidev0.1 |
+| SHT41 SDA | Pin 3 | GPIO 2 | I2C1 SDA | addr 0x44 |
+| SHT41 SCL | Pin 5 | GPIO 3 | I2C1 SCL | |
+| SHT41 VCC | Pin 1 | 3V3 | Power | QWIIC/Stemma QT |
+| SHT41 GND | Pin 9 | GND | Power | |
+| MLX90640 SDA | Pin 3 | GPIO 2 | I2C1 SDA (shared) | addr 0x33, optional |
+| MLX90640 SCL | Pin 5 | GPIO 3 | I2C1 SCL (shared) | |
+| MLX90640 VCC | Pin 17 | 3V3 | Power | |
+| MLX90640 GND | Pin 20 | GND | Power | |
+| Pump MOSFET gate | Pin 32 | GPIO 12 | PWM0 | 1kΩ to gate, 10kΩ pulldown |
+
+### K-Type Thermocouple Polarity (IMPORTANT — EMPIRICALLY VERIFIED 2026-04-20)
+- **On THIS batch of probes: Red wire = POSITIVE (+), Yellow wire = NEGATIVE (−)**
+- This is OPPOSITE of ANSI standard (which says yellow=+, red=−)
+- Our probes are IEC-coded under the jacket even though they have yellow/red insulation
+- Validated on TC-A: pinch test went 21°C → 33°C when wired red→T+, yellow→T−
+- If readings go DOWN when plate heats up, swap the leads at the MAX31855 screw terminal
+- **Wire TC-B the same way when second MAX31855 arrives**: red on T+, yellow on T−
+
+**Visual reference for screw terminal** (use this, ignore silkscreen "Yellow/Red" labels):
+```
+Hold MAX31855 with 6-pin header on LEFT edge, screw terminal on TOP
+  ┌─────────────┐
+  │ [RED][YEL]  │ ← screw terminal
+  │   Vin       │
+  │   3V0       │
+  │   GND       │
+  │   DO        │
+  │   CS        │
+  │   CLK       │
+  └─────────────┘
+LEFT screw  = Red wire  (T+)
+RIGHT screw = Yellow wire (T-)
+```
+
+### TC-A Assembly Status (2026-04-20)
+- MAX31855 #1 (blue variant w/ 6-pin header: Vin/3V0/GND/DO/CS/CLK)
+- Powered via Vin pin → Pi Pin 1 (3.3V) — board regulator passes through at 3.3V, works fine
+- Wire colors on #1 (for reference when wiring #2):
+  - green → Vin → Pi Pin 1
+  - red → GND → Pi Pin 6
+  - yellow → DO → Pi Pin 21 (MISO)
+  - purple → CS → Pi Pin 24 (CE0)
+  - green (second) → CLK → Pi Pin 23 (SCLK)
+- TC-B will use Pi Pin 26 (CE1) for CS instead of Pin 24
+
+### TC-B Assembly Status (2026-04-21 — VALIDATED)
+- MAX31855 #2 (same blue variant as #1) wired via breadboard fan-out
+- SPI bus shared with TC-A via breadboard rails/rows:
+  - **+ rail**: Pi Pin 1 (3.3V) + MAX #1 Vin + MAX #2 Vin
+  - **− rail**: Pi Pin 6 (GND) + MAX #1 GND + MAX #2 GND
+  - **Row 5 (A/B/C)**: DO fan-out — Pi Pin 21 (MISO) + MAX #1 DO + MAX #2 DO
+  - **Row 28**: CLK fan-out — Pi Pin 23 (SCLK) + MAX #1 CLK + MAX #2 CLK
+  - **Row 18 (A/B)**: CS for MAX #1 — Pi Pin 24 (CE0) → MAX #1 CS only
+  - **Row 14 (A/B)**: CS for MAX #2 — Pi Pin 26 (CE1) → MAX #2 CS only
+  - (CS lines MUST stay isolated per chip — do not fan out CS)
+- Thermocouple: red→T+ (left screw), yellow→T− (right screw), same IEC convention as TC-A
+- **Smoke test 2026-04-21**: idle A=20.0°C / B=20.2°C, pinch-A climbed 27→30, pinch-B climbed 30.8→31.5, channels independent, no FAULT codes, polarity correct on both
+
+### PID + SSR (NOT connected to Pi — standalone mains loop)
+- Inkbird ITC-100VH PID → reads K-type TC in vaporizer block → drives SSR-40DA
+- SSR switches 120V mains to 300W cartridge heater
+- Thermal fuse 240°C in series with cartridge heater (MANDATORY safety)
+- Set PID: SV=200°C, alarm=220°C
+- GFCI outlet required for mains heater circuit
+- DEFERRED for Portland show — needed only for sweat vaporizer; plate-only demo doesn't require it
+
+### IR Lamp Mains Control (2026-04-21 — VALIDATED)
+- **SSR**: DIWD SSR-25 DA (25A rating, 3–32V DC input, 24–380V AC load) — sufficient for ~2–4A IR lamp
+- **Box**: DIY severed extension cord inside black project box
+- **AC wiring** (verified working):
+  - Hot (black) cut, wall-side → SSR terminal 1, lamp-side → SSR terminal 2
+  - Neutral (white) passes through uncut via Wago lever nut
+  - Ground (green) passes through uncut via Wago lever nut
+- **DC input** (Pi control):
+  - SSR terminal 3 (+) → Pi Pin 11 (GPIO 17)
+  - SSR terminal 4 (−) → Pi Pin 6 (GND)
+- **GFCI outlet required upstream** (mandatory for Portland demo)
+- **Python control**: `gpiozero.LED(17)` with `lgpio` backend — validated 2026-04-21, 5-cycle toggle test passed
+- **Dependencies installed in solaris-env**: `gpiozero`, `lgpio` (required `sudo apt install liblgpio-dev python3-lgpio` first)
+- Digital Loggers IoT Relay will replace this box (~1 week out per 2026-04-20 order)
+
+### Parts on Desk (ALL ARRIVED April 2026)
+- Pi 5 8GB + CanaKit heatsink/fan + 128GB SD ✓
+- MX-6 thermal paste ✓
+- K-type TC probes (5-pack, ALLmeter) ✓
+- MAX31855 breakouts (4-pack, NOYITO) ✓
+- SHT41 sensor (QWIIC) ✓
+- QWIIC cable kit ✓
+- SSR (Fotek SSR-40DA) ✓
+- Cartridge heaters (300W, red) ✓
+- INTLLAB peristaltic pumps (4-pack) ✓
+- Silicone tubing ✓
+- DC barrel jack adapter ✓
+- Stainless steel fixture (base plate + column) — FABRICATED ✓
+
+### Software
+- **Daemon script**: `solaris_daemon.py` — on Desktop, ready to SCP to Pi
+- Reads 2× MAX31855 (SPI), SHT41 (I²C), optional MLX90640 (I²C) at 1 Hz
+- Buffers 60 samples, POSTs to FUZE Atlas `/api/admin/solaris-tests/[id]/ingest`
+- Also saves local CSV backup (`~/solaris_run_YYYYMMDD_HHMMSS.csv`)
+- Systemd service file: `/etc/systemd/system/solaris.service`
+- Python venv: `~/solaris-env/` with spidev, smbus2, requests, adafruit-circuitpython-sht4x, adafruit-circuitpython-mlx90640
+- **Design doc**: `Desktop/fuzecost/Solaris_FZ500_Design.html` (full BOM, physics, architecture)
+- **Assembly guide**: `Desktop/Solaris_FZ500_Assembly_Guide.html` (wiring, GPIO, step-by-step)
+
+### Assembly Status (as of 2026-04-21 evening)
+- [x] Pi 5 heatsink + fan + thermal paste
+- [x] Flash SD card (Pi OS Lite 64-bit, hostname=solaris, user=fuze)
+- [x] SSH'd into Pi (root cause of earlier failures: macOS Internet Sharing intercepting LAN packets — turn OFF)
+- [x] Install Python deps in `~/solaris-env/` (flask, flask-socketio, eventlet, spidev, gpiozero, lgpio, matplotlib)
+- [x] Enable SPI + I2C via raspi-config
+- [x] Wire MAX31855 #1 → SPI CE0 (TC-A) — validated 2026-04-20
+- [x] Wire MAX31855 #2 → SPI CE1 (TC-B) — validated 2026-04-21 (dual-channel smoke test passed)
+- [x] Rewire breadboard with F-M jumpers in office location after intermittent contact failures
+- [x] Wire DS18B20 air-gap probe (OneWire, 4.7kΩ pull-up to 3.3V, w1-gpio overlay persisted in /boot/firmware/config.txt)
+- [x] Bond TC-A + TC-B to plate underside — INTERIM: MX-6 paste + electrical tape, diagonally opposite quadrants. Post-Portland: rebond with Arctic Alumina epoxy.
+- [x] Mount DS18B20 in ~60mm air gap (inside aperture frame, suspended above plate)
+- [x] Mount IR lamp — 200mm to fabric, 260mm to plate (geometry locked, see above)
+- [x] Build DIY SSR outlet box for IR lamp control (2026-04-21 validated, GPIO 17 → SSR terminal 3)
+- [x] Build Flask kiosk dashboard (charts + test control, served at :5000)
+- [x] Build run_comparison.py automation (3×baseline + 3×untreated + 3×treated + matplotlib overlay chart)
+- [x] Write TEST_PROTOCOL.md (10 sections: safety, pre-flight, geometry, parameters, procedure, data, comparison, physics, limitations, troubleshooting)
+- [ ] First dry run — heat plate only, no fabric (verify 3-sensor pinch test passes after rewire)
+- [ ] First full fabric test — baseline → untreated → treated 9-test sequence
+- [ ] **DEFERRED v2:** Wire SHT41 → I²C, MLX90640 thermal cam, PID+SSR+cartridge heater (steam side), Pi HAT PCB design, Digital Loggers IoT Relay swap
+
+### Solaris Project File Tree (`/Desktop/helios/solaris_dashboard/`)
+- `app.py` — Flask + Socket.IO backend, sensor sampling, test sequencer, CSV writer
+- `templates/index.html` — dashboard UI (Plotly traces, status dots, controls)
+- `static/dashboard.js` — frontend live updates via Socket.IO
+- `setup_kiosk.sh` — one-shot Pi setup: deps, OneWire overlay, systemd services, Chromium kiosk
+- `run_comparison.py` — CLI automation: runs 9-test comparison, generates overlay PNG, validates efficacy criteria
+- `TEST_PROTOCOL.md` — formal test SOP for the rig
+- `README.md` — quick reference
+
+### Capsule Test Geometry — LOCKED FOR ASTM/AATCC/ISO/IDFB SUBMISSION
+These numbers are the formal test geometry for all reports, SOPs, patent filings, and standards submissions.
+
+| Parameter | Metric | Imperial | Notes |
+|-----------|--------|----------|-------|
+| Outer cylinder OD | 150.0 mm | 5.906" | Rev D4, locked |
+| Outer cylinder ID (at ribs) | 138.0 mm | 5.433" | OD minus 2×6mm wall |
+| Inner sleeve OD | 86.0 mm | 3.386" | Rev D4, locked |
+| Inner sleeve ID | 82.55 mm | 3.250" | Clears 3" aluminum post |
+| Annular gap (radial) | 27 mm | 1.063" | Down packing space |
+| Cylinder height | 228.6 mm | 9.000" | Outer cage height |
+| Down volume (annular) | 2,340 cm³ | 142.8 in³ | π×(72²−45²)×228.6 |
+| Mesh open area (V2, 6-window) | ~72% | — | Target for V2 redesign |
+| Outer exposed mesh area | ~714 cm² | ~110.7 in² | π×138×228.6×0.72 |
+| Inner exposed mesh area | ~445 cm² | ~69.0 in² | π×86×228.6×0.72 |
+| Total exposed mesh | ~1,159 cm² | ~179.6 in² | Both surfaces combined |
+| **Surface area per gram** | **= 1,159 / (grams packed)** | — | Key metric for SOP |
+
+**Standards targets:** ASTM, AATCC, ISO, IDFB
+**Patent scope:** Test apparatus including pressurized saturated steam vapor delivery (Solaris FZ-500 vaporizer block + Helios capsule chamber), combined IR heat deflection + sweat egress protocol, concentric mesh-embedded TPU cylinder geometry with calculated exposed surface area per unit mass of fill.
+
+### TPU Mesh-Embedded Capsule Frame V4 (Current — April 29, 2026)
+All parts renamed to V4 to track this morning's changes. Material: TPU 95A.
+
+**Design Philosophy:** Concentric cylinders with mesh lattice walls. Pause print at mesh layer to embed bridal mesh. Expedry-treated down fills the void space between inner and outer column mesh walls. Capsule sits on load cell — must drop freely over 3" aluminum steam generator tube with NO rubbing/contact.
+
+#### V4 STL Files (on Desktop)
+| File | Description | Print Qty |
+|------|-------------|-----------|
+| `FUZE_Capsule Cap V4.stl` (96 KB) | Cap — 166mm disk, 153mm outer lip, 90.4mm inner lip | 1 (PRINTED ✓) |
+| `FUZE_OuterPanel_V4.stl` (83 KB) | Outer panel — both edges female T-slots, 258.3mm wide | 2 |
+| `FUZE_InnerColumn_V4.stl` (15 KB) | Inner column — thin wall, lap joint tabs | 2 |
+| `FUZE_CouplerKeys_V4.stl` (54 KB) | 18 solid dogbone coupler keys on one plate | 1 |
+
+#### Outer Panel V4 — Both Edges Female
+- **Panel:** 258.3 × 232.6 × 6.0mm (3mm backing + 3mm tooth layer)
+- **Assembled cylinder:** OD 164.4mm, **ID 152.4mm (6" exactly)**
+- **Both edges identical female T-slots** (no male tabs — cleaner 24mm seam vs old 50mm)
+- T-slot geometry: 10mm narrow opening at edge (7mm stem depth) → 14mm wide pocket (5mm head depth)
+- 12mm rail width on each edge
+- Crossbars at X=84.19 and X=165.25 (scaled for wider panel)
+- Mesh pause at layer 12 (Z=2.4mm at 0.2mm layer height)
+- **Print TWO identical copies, join with dogbone coupler keys at both seams**
+- Generator: `gen_outer_v3.py`
+
+#### Inner Column V4 — Lap Joint
+- **Panel:** 135.1 × 232.6 × 3.0mm (1.5mm backing + 1.5mm tooth layer)
+- **Assembled cylinder:** OD 86.0mm, ID 80.0mm, wall 3.0mm
+- **Clearance from 3" aluminum tube:** 1.9mm per side (76.2mm tube OD)
+- **Cap fit:** OD 86mm fits inside cap inner lip (86.4mm ID) with 0.2mm gap
+- **Lap joint tabs** for glue + clamp assembly:
+  - Left edge: 8mm wide, layers 1-7 only (Z=0 to 1.5mm) — prints on bed
+  - Right edge: 8mm wide, layers 8-15 only (Z=1.5 to 3.0mm) — **NEEDS SLICER SUPPORT** (cantilever)
+- Frame: 6mm crossbars at thirds, 8mm top/bottom borders, 6mm middle bar
+- Mesh pause at layer 8 (Z=1.5mm at 0.2mm layer height)
+- **Print TWO identical copies, glue + clamp at lap seams**
+- Generator: `gen_inner_column.py`
+
+#### Cap V4 — Printed and Confirmed
+- 166mm outer disk diameter
+- 153mm outer lip OD (registers on outer cylinder 152.4mm ID)
+- 86.4mm inner lip ID / 90.4mm inner lip OD (goes around inner column 86mm OD)
+- Old undersized cap (that fell through) works as interior support ring sitting inside the bore
+- Generator: cap section in `gen_capsule_frame_v2b.py` (dimensions updated inline)
+
+#### Coupler Keys V4 — 18 Solid Dogbones
+- **Key dimensions:** 25mm × 13.5mm × 2.8mm (updated from caliper measurements)
+- End wings: 5.5mm × 13.5mm, center stem: 14mm × 9.5mm
+- 18 solid keys (9 per seam × 2 seams), 0 slotted (both edges female, no male connectors)
+- Layout: 3 rows × 6 columns on one plate
+- Keys act as male-to-male bridges across two female T-slot pockets at each seam
+- Generator: `gen_keys_final.py`
+
+#### Assembly Order
+1. Print 2× inner column halves (with slicer support for right-edge cantilever tab)
+2. Glue + clamp inner column lap joints
+3. Print 2× outer panels (pause at layer 12 for mesh embedding)
+4. Print 1× coupler key plate (18 keys)
+5. Join outer panels with dogbone keys at both 24mm seams
+6. Wrap bridal mesh around inner and outer cylinders
+7. Pack Expedry-treated down in annular void between columns
+8. Cap seals assembly — outer lip on outer cylinder, inner lip around inner column
+9. Capsule drops freely over aluminum steam generator tube onto load cell
+
+### Helios Steam Generator — Wiring Status (April 29, 2026)
+
+#### Aluminum Column Steam Generator (replacing old sonic humidifier setup)
+New components wiring into existing Pi + relay HAT enclosure:
+- 2× 12V 40W cartridge heaters (heat pegs) — in aluminum column base
+- 1× peristaltic pump (12V DC) — drips water onto heated plate
+- 1× SHT41 temp/humidity sensor (I2C, addr 0x44) — inside column
+- 1× SDP810 differential pressure sensor (I2C, addr 0x25) — inside column
+- 1× MAX31855 thermocouple amplifier (SPI, CE0) — K-type TC on aluminum puck
+- 1× DS18B20 temperature probe (1-Wire, GPIO4) — inside column
+- 1× sonic humidifier disc (RETAINED from old setup, one only)
+- Sensors + pump tube route through removable column cap
+
+#### Power Supply
+- **In-box PSU:** 12V 60W / 5A LED driver (IP67 waterproof) — **UNDERSIZED for 2× 40W heaters**
+- **New PSU (ready to swap):** ALITOVE ALT-1230T — **12V 30A 360W** — more than enough for everything
+- PSU output wires: Brown = positive (+), Blue = negative (−)
+- PSU COM terminal = ground/negative
+- Distribution block in box: 3rd terminal from bottom = 12V, wired by Mike
+
+#### SSR (Solid State Relay)
+- **Model:** DMWD SSR-10 DD — DC input (3-32VDC trigger), DC output (5-60VDC, 10A max)
+- **This is the correct SSR type** for switching 12V DC loads (NOT the SSR-25DA which is AC-only)
+- **Wiring:**
+  - Terminal 1: PSU brown (+12V in)
+  - Terminal 2: heater leads out (+)
+  - Terminal 3 (+): Pi GPIO17 (Pin 11) — trigger
+  - Terminal 4 (−): Pi GND (Pin 6) — trigger ground
+- **RESOLVED (2026-04-29):** SSR was NOT faulty — polarity was reversed. Rewired correctly and validated with GPIO17 toggle test (10s ON/OFF). Works perfectly.
+- **Pull-down resistor recommended:** 10kΩ between GPIO17 and GND to prevent floating HIGH at boot triggering SSR
+- **Andrew's preference:** Use SSR for heater control, NOT the relay HAT. Relay HAT reserved for humidifier, pump, other loads.
+
+#### Pi GPIO Allocation (Helios Pi)
+| Pin | GPIO | Function | Status |
+|-----|------|----------|--------|
+| Pin 1 | 3.3V | Power — SHT41, SDP810, MAX31855 | Wired |
+| Pin 3 | GPIO2 (SDA) | I2C — SHT41 (0x44) + SDP810 (0x25) | **Validated** |
+| Pin 5 | GPIO3 (SCL) | I2C — SHT41 + SDP810 | **Validated** |
+| Pin 6 | GND | Common ground bus (SSR, sensors) | Wired |
+| Pin 7 | GPIO4 | 1-Wire — DS18B20 (needs 4.7kΩ pull-up) | Planned |
+| Pin 11 | **GPIO17** | **SSR trigger (+) for cartridge heaters** | **Validated** |
+| Pin 21 | GPIO9 (MISO) | SPI — MAX31855 DO | **Validated** |
+| Pin 23 | GPIO11 (SCLK) | SPI — MAX31855 CLK | **Validated** |
+| Pin 24 | GPIO8 (CE0) | SPI — MAX31855 CS | **Validated** |
+| Relay HAT | Channels 1-4 | Humidifier, pump, TBD (addr 0x10) | Existing |
+
+#### Relay HAT
+- 4-channel relay DDL board (orange HUI KE relays)
+- I2C controlled, addr=0x10
+- **INVERTED LOGIC:** 0x00 = relay ON, 0xFF = relay OFF
+- Protocol: `bus.write_byte_data(0x10, channel, value)` where channel=1-4
+- DIP switches: both OFF
+- Channel allocation:
+  - CH1: Sonic humidifier (existing)
+  - CH2: **Peristaltic pump** (INTLLAB DP-DIY, 12V 5W, 0.42A)
+  - CH3: Available
+  - CH4: Available
+
+#### Peristaltic Pump
+- **Model:** INTLLAB DP-DIY — 12V, 5W (0.42A)
+- **Wiring:** 12V from distribution block → Relay CH2 COM → CH2 NO → Pump + (red dot spade) → Pump − → PSU COM (ground)
+- **Speed:** Full speed is WAY too fast for drip application — needs pulse control (0.5s ON / 10-15s OFF)
+- **Polarity:** Red dot on plastic housing = positive terminal. Wrong polarity = reverse flow direction (just swap leads)
+
+#### Validated Systems (2026-04-29)
+- [x] SSR-10 DD — polarity fixed, GPIO17 toggle test passed
+- [x] SDP810 differential pressure — I2C 0x25, reading 0.00 Pa (correct at rest)
+- [x] SHT41 temp/humidity — I2C 0x44, reading 74.9°F / 30.7% RH
+- [x] MAX31855 thermocouple — SPI CE0, reading 78.3°F (puck temp)
+- [x] Heater cartridge — SSR fires on GPIO17 HIGH, shuts off on LOW
+- [x] Peristaltic pump — Relay CH2, ON/OFF validated from Pi
+- [x] **Web dashboard** — Flask app at http://<pi-ip>:5000, live sensor charts + controls
+- [x] **All 4 sensors + 2 actuators running simultaneously on dashboard**
+
+#### Known Issue: MAX31855 TC Short to GND
+- Intermittent "TC short to GND" fault when thermocouple tip contacts aluminum puck directly
+- Fix: Kapton tape between TC tip and puck surface (insulates ground loop, still conducts heat)
+- Also: route TC wires away from heater power leads to reduce noise
+
+#### SHT41 I2C Note
+- SHT41 uses single-byte commands, NOT register addressing
+- Must use `bus.write_byte(0x44, 0xFD)` then raw `i2c_msg.read()` — NOT `write_i2c_block_data` or `read_i2c_block_data`
+- Soft reset command: `bus.write_byte(0x44, 0x94)`
+
+#### TODO (Pre-Demo — Friday April 30)
+- [ ] Swap in ALITOVE 360W PSU (both cartridges need full power for fast heat-up)
+- [ ] Kapton tape on TC tip → puck (fix ground fault)
+- [ ] Build insulator stand for hot aluminum column
+- [ ] Assemble capsule frame (inner + outer columns, down fill)
+- [ ] Route pump tubing into column
+- [ ] Add pump pulse logic to dashboard (0.5s ON / 10-15s OFF cycle)
+- [ ] Test full steam generation cycle: heat puck to 250°F → pulse water → monitor humidity rise
+
+#### TODO (Post-Demo)
+- [ ] Add 10kΩ pull-down resistor on GPIO17 → GND (boot safety)
+- [ ] Wire DS18B20 to GPIO4 (4.7kΩ pull-up needed)
+- [ ] Add PID temperature control to dashboard
+- [ ] Add CSV data logging for test runs
+- [ ] PWM pump speed control via MOSFET (replace relay for finer flow rate)
+
 ## Related Projects
 | Project | Repo | Description |
 |---------|------|-------------|
 | FUZE Atlas | fuzeatlas | Multi-portal web app |
 | fuzefaq.com | fuzecost | Public landing page |
-| **Helios** | **helios** | **Expedry Capsule test apparatus** |
+| **Helios** | **helios** | **Expedry Capsule test apparatus (humidity chamber)** |
+| **Solaris** | **N/A (standalone Pi)** | **IR Heat Deflection + Sweat Egress test rig** |
