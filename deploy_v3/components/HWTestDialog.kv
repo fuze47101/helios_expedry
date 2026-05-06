@@ -1,0 +1,136 @@
+#:import theme utils.theme
+
+<HWTestDialog>:
+    title: 'Hardware Diagnostics'
+    title_size: sp(22)
+    title_color: 1, 1, 1, 1
+    size_hint: 0.9, 0.85
+    auto_dismiss: False
+    separator_color: theme.go_color
+    background_color: 0.1, 0.1, 0.12, 1
+
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(15)
+        spacing: sp(8)
+
+        # Checklist
+        Label:
+            text: root.line1
+            font_size: sp(18)
+            bold: True
+            color: root.color1
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(36)
+
+        Label:
+            text: root.line2
+            font_size: sp(18)
+            bold: True
+            color: root.color2
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(36)
+
+        Label:
+            text: root.line3
+            font_size: sp(18)
+            bold: True
+            color: root.color3
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(36)
+
+        Label:
+            text: root.line4
+            font_size: sp(18)
+            bold: True
+            color: root.color4
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(36)
+
+        Label:
+            text: root.line5
+            font_size: sp(18)
+            bold: True
+            color: root.color5
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(36)
+
+        Label:
+            text: root.line6
+            font_size: sp(18)
+            bold: True
+            color: root.color6
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(36)
+
+        Label:
+            text: root.line7
+            font_size: sp(18)
+            bold: True
+            color: root.color7
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(36)
+
+        # Spacer
+        Widget:
+            size_hint_y: 1
+
+        # Status bar
+        Label:
+            text: root.status_text
+            font_size: sp(20)
+            bold: True
+            color: theme.go_color if 'ALL SYSTEMS' in root.status_text else (1, 0.8, 0, 1) if 'ISSUES' in root.status_text else (1, 1, 1, 1)
+            halign: 'center'
+            valign: 'middle'
+            text_size: self.size
+            size_hint_y: None
+            height: sp(40)
+
+        # Buttons
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(55)
+            spacing: sp(15)
+
+            Button:
+                text: 'Close'
+                font_size: sp(20)
+                bold: True
+                background_normal: ''
+                background_color: 0.3, 0.3, 0.35, 1
+                color: 1, 1, 1, 1
+                disabled: root.is_running
+                on_release: root.dismiss()
+
+            Button:
+                text: 'RUN TEST' if not root.is_running else 'TESTING...'
+                font_size: sp(22)
+                bold: True
+                background_normal: ''
+                background_color: theme.go_color if not root.is_running else (0.3, 0.3, 0.35, 1)
+                color: 1, 1, 1, 1
+                disabled: root.is_running
+                on_release: root.run_test()

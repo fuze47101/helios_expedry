@@ -1,0 +1,92 @@
+<ControlRow@BoxLayout>:
+    orientation: 'horizontal'
+    spacing: sp(15)
+    size_hint_y: None
+    height: sp(50)
+
+<ControlLabel@Label>:
+    font_size: sp(24)
+    bold: True
+    size_hint_y: None
+    height: sp(50)
+
+<Indicator@NeuCard>:
+    elevation: 2
+    comp_color: (0,0,0,1)
+    light_color: theme.dark_color
+    dark_color: theme.light_color
+    size_hint: (None, None)
+    size_hint_y: None
+    width: sp(50)
+    height: sp(50)
+    radius: sp(25)
+
+<ControlButton@NeuRoundedButton>:
+    size_hint_y: None
+    size_hint_x: None
+    width: sp(75)
+    height: sp(50)
+    font_size: sp(24)
+
+<Controls>:
+    size_hint: (None, None)
+    height: sp(275)
+    width: sp(365)
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: sp(15)
+        padding: sp(15)
+        size_hint_y: None
+        height: sp(180)
+        # Label:
+        #     text: 'Controls'
+        #     font_size: sp(24)
+        #     bold: True
+        #     size_hint_y: None
+        #     height: sp(50)
+        ControlRow:
+            Indicator:
+                comp_color: theme.go_color if root.hum1_status else (0,0,0,1)
+            ControlLabel:
+                text: 'Humidifier 1'
+            ControlButton:
+                text: 'Off' if root.hum1_status else 'On'
+                # text: 'Off' 
+                size_hint_y: None
+                height: sp(50)
+                #disabled: not root.relay_connected
+                on_release: root.toggle_output(output='humidifier1')
+        ControlRow:
+            Indicator:
+                comp_color: theme.go_color if root.hum2_status else (0,0,0,1)
+            ControlLabel:
+                text: 'Humidifier 2'
+            ControlButton:
+                text: 'Off' if root.hum2_status else 'On'
+                # text: 'Off' 
+                size_hint_y: None
+                height: sp(50)
+                #disabled: not root.relay_connected
+                on_release: root.toggle_output(output='humidifier2')
+        ControlRow:
+            Indicator:
+                comp_color: theme.go_color if root.fan_status else (0,0,0,1)
+            ControlLabel:
+                text: 'Fan'
+            ControlButton:
+                text: 'Off' if root.fan_status else 'On'
+                size_hint_y: None
+                height: sp(50)
+                #disabled: not root.relay_connected
+                on_release: root.toggle_output(output='fan')
+        ControlRow:
+            Indicator:
+                comp_color: theme.go_color if root.heat_status else (0,0,0,1)
+            ControlLabel:
+                text: 'Heater'
+            ControlButton:
+                text: 'Off' if root.heat_status else 'On'
+                size_hint_y: None
+                height: sp(50)
+                #disabled: not root.relay_connected
+                on_release: root.toggle_output(output='heater')

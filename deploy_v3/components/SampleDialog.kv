@@ -1,0 +1,119 @@
+#:import theme utils.theme
+
+<SampleDialog>:
+    title: 'Place Sample'
+    title_size: sp(24)
+    title_color: 1, 1, 1, 1
+    size_hint: 0.85, 0.65
+    auto_dismiss: False
+    separator_color: theme.go_color
+    background_color: 0.14, 0.15, 0.18, 1
+
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(16)
+        spacing: sp(12)
+
+        # Status message
+        Label:
+            text: root.status_text
+            font_size: sp(22)
+            bold: True
+            color: [int(root.status_color[0:2], 16)/255, int(root.status_color[2:4], 16)/255, int(root.status_color[4:6], 16)/255, 1]
+            size_hint_y: None
+            height: sp(36)
+            halign: 'center'
+            valign: 'middle'
+            text_size: self.size
+
+        # Large weight display
+        Label:
+            text: root.weight_text
+            font_size: sp(60)
+            bold: True
+            color: theme.go_color if root.sample_stable else (1, 1, 1, 1)
+            halign: 'center'
+            valign: 'middle'
+            text_size: self.size
+
+        # Progress indicator
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(40)
+            spacing: sp(8)
+            padding: [sp(20), 0]
+
+            # Step 1
+            Label:
+                text: '[b]1.[/b] Place'
+                markup: True
+                font_size: sp(16)
+                color: (0.3, 0.8, 0.4, 1) if root.sample_detected else (0.5, 0.5, 0.5, 1)
+                halign: 'center'
+            Label:
+                text: '>'
+                font_size: sp(16)
+                color: 0.4, 0.4, 0.4, 1
+                size_hint_x: 0.2
+                halign: 'center'
+            # Step 2
+            Label:
+                text: '[b]2.[/b] Stabilize'
+                markup: True
+                font_size: sp(16)
+                color: (0.3, 0.8, 0.4, 1) if root.sample_stable else ((1, 0.72, 0.2, 1) if root.sample_detected else (0.5, 0.5, 0.5, 1))
+                halign: 'center'
+            Label:
+                text: '>'
+                font_size: sp(16)
+                color: 0.4, 0.4, 0.4, 1
+                size_hint_x: 0.2
+                halign: 'center'
+            # Step 3
+            Label:
+                text: '[b]3.[/b] Start'
+                markup: True
+                font_size: sp(16)
+                color: (0.3, 0.8, 0.4, 1) if root.can_start else (0.5, 0.5, 0.5, 1)
+                halign: 'center'
+
+        # Spacer
+        Widget:
+            size_hint_y: 1
+
+        # Buttons
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(55)
+            spacing: sp(16)
+
+            Button:
+                text: 'Cancel'
+                font_size: sp(20)
+                bold: True
+                background_normal: ''
+                background_color: 0.3, 0.3, 0.35, 1
+                color: 1, 1, 1, 1
+                on_release: root.cancel()
+
+            Button:
+                text: 'SKIP (No Sample)'
+                font_size: sp(18)
+                bold: True
+                background_normal: ''
+                background_color: 0.5, 0.35, 0.1, 1
+                color: 1, 1, 1, 1
+                on_release: root.start_test()
+
+            Button:
+                text: 'START TEST'
+                font_size: sp(22)
+                bold: True
+                background_normal: ''
+                background_color: theme.go_color if root.can_start else (0.3, 0.3, 0.35, 1)
+                color: 1, 1, 1, 1
+                disabled: not root.can_start
+                opacity: 1 if root.can_start else 0.5
+                on_release: root.start_test()

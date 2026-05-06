@@ -1,0 +1,37 @@
+#:import theme utils.theme
+
+<WarningDialog>:
+    auto_dismiss: False
+    title: 'Save Warning'
+    title_size: sp(24)
+    size_hint: None, None
+    size: sp(650), sp(600)
+    background: ''
+    background_color: theme.bg_color
+    separator_color: theme.go_color
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(15)
+        spacing: sp(15)
+        Widget:
+        Label:
+            font_size: sp(30)
+            text_size: self.size
+            text: 'CONTINUING WILL OVERWRITE UNSAVED TEST DATA. ARE YOU READY TO PROCEED?'
+        Widget:
+        BoxLayout:
+            size_hint_y: None
+            height: sp(65)
+            spacing: sp(15)
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(32)
+                text: "CANCEL"
+                on_release: root.dismiss()
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(32)
+                text: "CONTINUE"
+                on_release: root.start()

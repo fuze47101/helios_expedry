@@ -20,7 +20,7 @@ import time
 
 
 class Scale:
-    PORT = '/dev/ttyUSB0'
+    PORT = None  # Auto-detect
     BAUD = 9600
     BYTESIZE = 8
     PARITY = 'N'
@@ -37,7 +37,16 @@ class Scale:
         self._thread = None
 
     def connect(self):
-        """Open serial connection to scale."""
+        """Open serial connection to scale. Auto-detects port if not specified."""
+        # Auto-detect port if none set
+        if not self.port:
+            self.port = self.find_port()
+            if not self.port:
+                print("Scale: no USB serial port found")
+                self.connected = False
+                return False
+            print(f"Scale: auto-detected at {self.port}")
+
         try:
             self.ser = serial.Serial(
                 self.port,
@@ -53,7 +62,7 @@ class Scale:
             self._thread.start()
             return True
         except Exception as e:
-            print(f"Scale connection failed: {e}")
+            print(f"Scale connection failed on {self.port}: {e}")
             self.connected = False
             return False
 

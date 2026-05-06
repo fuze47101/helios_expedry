@@ -1,0 +1,430 @@
+#:import Controls components.Controls
+#:import Factory kivy.factory.Factory
+#:import LinePlot kivy_garden.graph.LinePlot
+#:import Test_Settings components.Test_Settings
+#:import theme utils.theme
+
+# ── Reusable Widget Templates ──
+
+<DataBox@NeuCard>:
+    size_hint_y: None
+    size_hint_x: 1.25
+    width: sp(125)
+    height: sp(50)
+    radius: sp(10)
+    padding: sp(10), sp(5), sp(10), sp(5)
+    comp_color: [0,0,0,1]
+    light_color: theme.dark_color
+    dark_color: theme.light_color
+
+<Data@Label>:
+    text_size: self.size
+    halign: 'right'
+    font_size: sp(32)
+    bold: True
+
+<DataLabel@Label>:
+    font_size: sp(24)
+    bold: True
+    size_hint_y: None
+    height: sp(50)
+
+<DataRow@BoxLayout>:
+    orientation: 'horizontal'
+    spacing: sp(10)
+    size_hint_y: None
+    height: sp(50)
+
+<PhaseBadge@Label>:
+    font_size: sp(28)
+    bold: True
+    size_hint_y: None
+    height: sp(50)
+    canvas.before:
+        Color:
+            rgba: theme.wet_color if root.text == 'WET' else (theme.dry_color if 'DRY' in root.text else (theme.go_color if root.text == 'COMPLETE' else theme.idle_color))
+        RoundedRectangle:
+            pos: self.x + sp(5), self.y + sp(5)
+            size: self.width - sp(10), self.height - sp(10)
+            radius: [sp(8)]
+
+<WeightDisplay@NeuCard>:
+    size_hint_y: None
+    height: sp(120)
+    radius: sp(12)
+    padding: sp(10)
+    comp_color: [0,0,0,1]
+    light_color: theme.dark_color
+    dark_color: theme.light_color
+
+# ── Main Layout ──
+
+<FeatherInterface>:
+    options: options.__self__
+    canvas.before:
+        Color:
+            rgba: 0.34, 0.35, 0.38, 1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+    BoxLayout:
+        orientation: 'vertical'
+
+        # ═══════════════════════════════════════
+        # TOP SECTION — Logo + Data + Controls
+        # ═══════════════════════════════════════
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(330)
+            spacing: sp(10)
+            padding: sp(10), sp(10), sp(10), sp(5)
+
+            # ── LEFT COLUMN: Logo + Sensor Data ──
+            BoxLayout:
+                orientation: 'vertical'
+                size_hint_x: .55
+
+                # Logo row
+                BoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: sp(70)
+                    Image:
+                        source: './assets/ExpeDRY_logo.png'
+                        size_hint_x: None
+                        width: sp(160)
+                    Label:
+                        text: 'TEST SYSTEM'
+                        font_size: sp(16)
+                        bold: True
+                        size_hint_x: None
+                        width: sp(120)
+                        text_size: self.size
+                        halign: 'left'
+                        valign: 'bottom'
+                    Widget:
+
+                # Data grid — 2 columns
+                BoxLayout:
+                    orientation: 'horizontal'
+                    spacing: sp(10)
+                    padding: sp(5), 0, sp(5), 0
+
+                    # Column 1: Chamber sensors
+                    BoxLayout:
+                        orientation: 'vertical'
+                        spacing: sp(8)
+
+                        DataRow:
+                            DataLabel:
+                                text: 'Temp:'
+                                size_hint_x: None
+                                width: sp(80)
+                            DataBox:
+                                Data:
+                                    text: "{0:04.1f}".format(root.current_temp) + '°C'
+
+                        DataRow:
+                            DataLabel:
+                                text: 'Humidity:'
+                                size_hint_x: None
+                                width: sp(80)
+                            DataBox:
+                                Data:
+                                    text: "{:02.1f}".format(root.current_humd) + '%'
+
+                        DataRow:
+                            DataLabel:
+                                text: 'Power:'
+                                size_hint_x: None
+                                width: sp(80)
+                            DataBox:
+                                Data:
+                                    text: f"{root.power_data:.0f}" + 'W'
+
+                    # Column 2: Weight data
+                    BoxLayout:
+                        orientation: 'vertical'
+                        spacing: sp(8)
+
+                        DataRow:
+                            DataLabel:
+                                text: 'Weight:'
+                                size_hint_x: None
+                                width: sp(80)
+                                color: theme.weight_color
+                            DataBox:
+                                Data:
+                                    text: "{:.3f}g".format(root.current_weight)
+                                    color: theme.weight_color
+
+                        DataRow:
+                            DataLabel:
+                                text: '\u0394 Weight:'
+                                size_hint_x: None
+                                width: sp(80)
+                                color: theme.weight_color
+                            DataBox:
+                                Data:
+                                    text: "{:+.3f}g".format(root.weight_delta)
+                                    color: theme.stop_color if root.weight_delta > 0.1 else theme.go_color
+
+                        DataRow:
+                            DataLabel:
+                                text: 'Start:'
+                                size_hint_x: None
+                                width: sp(80)
+                            DataBox:
+                                Data:
+                                    text: "{:.3f}g".format(root.start_weight)
+                                    font_size: sp(26)
+
+            # ── CENTER COLUMN: Test Type + Settings ──
+            BoxLayout:
+                orientation: 'vertical'
+                size_hint_x: .55
+                spacing: sp(8)
+
+                # Test type selector
+                NeuCard:
+                    size_hint_y: None
+                    height: sp(55)
+                    Label:
+                        text: "TEST: "
+                        bold: True
+                        font_size: sp(18)
+                        size_hint_x: .35
+                    NeuRoundedButton:
+                        size_hint_x: 1
+                        size_hint_y: 1
+                        on_release: options.open(self)
+                        on_parent: options.dismiss()
+                        bold: True
+                        font_size: sp(18)
+                        text: root.mode_display
+                    DropDown:
+                        id: options
+                        Button:
+                            id: movement
+                            text: 'Moisture Movement'
+                            size_hint_y: None
+                            height: sp(50)
+                            background_color: theme.bg_color
+                            bold: True
+                            font_size: sp(18)
+                            on_release: root.test_mode = 'Movement'
+                        Button:
+                            id: resistance
+                            text: 'Moisture Resistance'
+                            size_hint_y: None
+                            height: sp(50)
+                            background_color: theme.bg_color
+                            bold: True
+                            font_size: sp(18)
+                            on_release: root.test_mode = 'Resistance'
+                        Button:
+                            id: dry_thermal
+                            size_hint_y: None
+                            height: sp(50)
+                            text: 'Dry Thermal'
+                            background_color: theme.bg_color
+                            bold: True
+                            font_size: sp(18)
+                            on_release: root.test_mode = 'Dry_Thermal'
+                        Button:
+                            id: wet_thermal
+                            size_hint_y: None
+                            height: sp(50)
+                            text: 'Wet Thermal'
+                            background_color: theme.bg_color
+                            bold: True
+                            font_size: sp(18)
+                            on_release: root.test_mode = 'Wet_Thermal'
+
+                Test_Settings:
+                    duration: root.duration
+                    endpoint: root.endpoint
+                    interval: root.interval
+                    running:  root.running
+                    sw_point: root.sw_point
+
+            # ── RIGHT COLUMN: Phase + Controls ──
+            BoxLayout:
+                orientation: 'vertical'
+                size_hint_x: .45
+                spacing: sp(8)
+
+                # Phase indicator
+                PhaseBadge:
+                    text: root.test_phase
+
+                # Timer display
+                BoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: sp(50)
+                    spacing: sp(8)
+                    DataLabel:
+                        text: 'Time:'
+                        size_hint_x: None
+                        width: sp(60)
+                        font_size: sp(20)
+                    DataBox:
+                        Data:
+                            text: root.current_time
+                            font_size: sp(26)
+
+                # Dry-back timer (visible during dry phase)
+                BoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: sp(50) if root.drying or root.test_phase == 'DRY BACK' or root.test_phase == 'DRY COMPLETE' else 0
+                    opacity: 1 if root.drying or root.test_phase == 'DRY BACK' or root.test_phase == 'DRY COMPLETE' else 0
+                    spacing: sp(8)
+                    DataLabel:
+                        text: 'Dry:'
+                        size_hint_x: None
+                        width: sp(60)
+                        font_size: sp(20)
+                        color: theme.dry_color
+                    DataBox:
+                        Data:
+                            text: root.dry_back_time
+                            font_size: sp(26)
+                            color: theme.dry_color
+
+                # Relay controls
+                Controls:
+                    fan_status:  root.fan_status
+                    hum1_status: root.hum1_status
+                    hum2_status: root.hum2_status
+                    heat_status: root.heat_status
+
+        # ═══════════════════════════════════════
+        # MIDDLE — Camera + Graph side by side
+        # ═══════════════════════════════════════
+        BoxLayout:
+            orientation: 'horizontal'
+            spacing: sp(5)
+            padding: sp(5), 0, sp(5), 0
+
+            # Camera feed (left)
+            BoxLayout:
+                size_hint_x: 0.38
+                canvas:
+                    Color:
+                        rgba: 0, 0, 0, 1
+                    Rectangle:
+                        pos: self.pos
+                        size: self.size
+                Image:
+                    id: camera_display
+                    fit_mode: 'fill'
+
+            # Graph (right)
+            BoxLayout:
+                orientation: 'vertical'
+                size_hint_x: 0.62
+                padding: 0, 0, sp(5), 0
+                Graph:
+                    id: graph_test
+                    plot: LinePlot
+                    color: theme.go_color
+                    xlabel: 'Time (sec)'
+                    ylabel: 'Humidity(%)' if root.test_mode == 'Movement' or root.test_mode == 'Resistance' else 'Calories'
+                    x_ticks_major: root.interval
+                    y_ticks_major: 5
+                    y_grid_label: True
+                    x_grid_label: True
+                    padding: 5
+                    x_grid: True
+                    y_grid: True
+                    xmin: 0
+                    xmax: root.duration if root.x_point <= root.duration else root.x_point
+                    ymin: 0
+                    ymax: 110 if root.test_mode == 'Movement' or root.test_mode == 'Resistance' else root.total_power + 1
+
+        # ═══════════════════════════════════════
+        # BOTTOM BAR — Power/Save + START button
+        # ═══════════════════════════════════════
+
+        # Info bar
+        BoxLayout:
+            size_hint_y: None
+            height: sp(55)
+            padding: sp(10), sp(5), sp(10), 0
+            spacing: sp(10)
+
+            # Total power (thermal modes)
+            DataRow:
+                size_hint_x: 0 if root.test_mode == "Movement" or root.test_mode == "Resistance" else 1
+                opacity: 0 if root.test_mode == "Movement" or root.test_mode == "Resistance" else 1
+                DataLabel:
+                    text: 'Total Power:'
+                    size_hint_x: None
+                    width: sp(140)
+                    font_size: sp(20)
+                DataBox:
+                    size_hint_x: None
+                    width: sp(160)
+                    Data:
+                        text: f"{root.total_power:.3f}" + ' Cal'
+                        font_size: sp(26)
+
+            # Scale connection indicator
+            Label:
+                size_hint_x: None
+                width: sp(120)
+                font_size: sp(16)
+                bold: True
+                text: 'SCALE: OK' if root.scale_connected else 'SCALE: --'
+                color: theme.go_color if root.scale_connected else theme.stop_color
+
+            Widget:
+
+            # Tare button
+            NeuRoundedButton:
+                size_hint_x: None
+                width: sp(120)
+                size_hint_y: 1
+                bold: True
+                font_size: sp(20)
+                text: 'TARE'
+                on_release: root.tare_scale()
+
+            # Save button
+            NeuRoundedButton:
+                disabled: not root.can_save
+                size_hint_x: None
+                width: sp(150)
+                size_hint_y: 1
+                on_release: root.save_test()
+                BoxLayout:
+                    orientation: 'horizontal'
+                    Widget:
+                    Image:
+                        source: './assets/save-24.png'
+                        size_hint_x: None
+                        width: sp(24)
+                        color: (1,1,1,.25) if not root.can_save else (1,1,1,1)
+                    Label:
+                        text: 'SAVE'
+                        font_size: sp(20)
+                        size_hint_x: None
+                        width: sp(60)
+                        disabled: not root.can_save
+                    Widget:
+
+        # START / STOP button
+        Button:
+            size_hint_x: 1
+            size_hint_y: None
+            height: sp(70)
+            text: root.button_text
+            font_size: sp(32)
+            bold: True
+            background_color: root.button_color
+            background_normal: ''
+            on_press: root.start()

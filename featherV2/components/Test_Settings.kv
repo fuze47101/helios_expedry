@@ -1,0 +1,109 @@
+#:import NeuApp neukivy.app
+#:import theme utils.theme
+
+<Setting@BoxLayout>:
+    orientation: 'horizontal'
+    spacing: sp(20)
+    size_hint_y: None
+    height: sp(50)
+
+<SettingLabel@Label>:
+    font_size: sp(20)
+    bold: True
+    size_hint_y: 1
+    text_size: self.size
+
+<SettingWrapper@NeuCard>:   
+    size_hint_y: 1
+    size_hint_x: None
+    width: sp(75)
+    radius: sp(10)
+    comp_color: [1,1,1,1]
+    light_color: theme.dark_color
+    dark_color: theme.light_color
+    padding:sp(5)
+
+<SettingInput@TextInput>:
+    background_color: [1,1,1,1]
+    background_normal: ''
+    background_active: ''
+    cursor_color: [0,0,0,1]
+    font_size: sp(24) 
+
+<SettingValue@Label>:
+    color: 0,0,0,1
+    font_size: sp(32)
+    bold: True
+
+<Increment@NeuRoundedButton>:
+    size_hint_x:None
+    size_hint_y:None
+    width:sp(50)
+    height: sp(50)
+    text: "-"
+    font_size: sp(32)
+
+<Test_Settings>:
+    size_hint_y: None
+    height: sp(260)
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: sp(15)
+        padding: sp(15)
+        size_hint_y: None
+        height: sp(180)
+        Label:
+            text: 'Test Settings'
+            font_size: sp(24)
+            bold: True
+            size_hint_y: None
+            height: sp(50)
+        Setting:
+            SettingLabel: 
+                text: 'Duration(min):'
+            NeuRoundedButton:
+                size_hint_x:None
+                size_hint_y:None
+                width:sp(50)
+                height: sp(50)
+                text: "-"
+                font_size: sp(32)
+                on_press: root.adjust_setting('Duration', direction="-")
+                disabled: root.running
+            SettingWrapper:
+                SettingValue:
+                    text: str(root.duration)
+            NeuRoundedButton:
+                size_hint_x:None
+                size_hint_y:None
+                width:sp(50)
+                height: sp(50)
+                text: "+"
+                font_size: sp(32)
+                on_press: root.adjust_setting('Duration', direction="+")
+                disabled: root.running
+        Setting:
+            SettingLabel: 
+                text: 'Sample Interval(sec):'
+            NeuRoundedButton:
+                size_hint_x:None
+                size_hint_y:None
+                width:sp(50)
+                height: sp(50)
+                text: "-"
+                font_size: sp(32)
+                on_press: root.adjust_setting('Interval', direction="-")
+                disabled: root.running
+            SettingWrapper:
+                SettingValue:
+                    text: str(root.interval)
+            NeuRoundedButton:
+                size_hint_x:None
+                size_hint_y:None
+                width:sp(50)
+                height: sp(50)
+                text: "+"
+                font_size: sp(32)
+                on_press: root.adjust_setting('Interval', direction="+")
+                disabled: root.running
+        Widget:

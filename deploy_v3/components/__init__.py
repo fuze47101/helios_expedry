@@ -1,4 +1,6 @@
 from components.Controls import Controls
+from components.HWTestDialog import HWTestDialog
+from components.SampleDialog import SampleDialog
 from components.SaveDialog import SaveDialog
 from components.SetupWizard import SetupWizard
 from components.WarningDialog import WarningDialog

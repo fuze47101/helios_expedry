@@ -103,15 +103,32 @@ class FeatherInterface(FloatLayout):
 
     def __init__(self, **kwargs):
         super(FeatherInterface, self).__init__(**kwargs)
-        self.capture = cv2.VideoCapture('/dev/video0')
+        # ── Auto-detect IR camera ──
+        self.capture = None
+        for dev_idx in range(5):
+            cap = cv2.VideoCapture(f'/dev/video{dev_idx}')
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    print(f'[CAMERA] Found at /dev/video{dev_idx} — {frame.shape}')
+                    self.capture = cap
+                    break
+                cap.release()
+        if self.capture is None:
+            print('[CAMERA] No thermal camera found on /dev/video0-4')
+            self.capture = cv2.VideoCapture('/dev/video0')  # fallback
+
         Clock.schedule_once(self.connect)
         Clock.schedule_once(self.check_relay)
         threading.Thread(target=self.read, daemon=True).start()
         Clock.schedule_interval(self.update, 1.0/33.0)
-        # Connect scale
+        # ── Auto-detect scale ──
         self.scale = Scale.Scale()
         if self.scale.connect():
             self.scale_connected = True
+            print(f'[SCALE] Connected at {self.scale.port}')
+        else:
+            print('[SCALE] Not detected')
         # Update weight at 2Hz
         Clock.schedule_interval(self.poll_weight, 0.5)
 
@@ -557,11 +574,10 @@ class FeatherInterface(FloatLayout):
                 self.fan_status = False
 
     def hardware_test(self, *args):
-        """Run a 15-second hardware diagnostic cycling through all outputs and sensors."""
+        """Open hardware diagnostic popup with visual checklist."""
         if self.running:
             return
-        self.test_phase = 'HW TEST'
-        threading.Thread(target=self._run_hardware_test, daemon=True).start()
+        Factory.HWTestDialog().open()
 
     def _run_hardware_test(self):
         """Background thread: cycle each component for 15 seconds to verify operation."""

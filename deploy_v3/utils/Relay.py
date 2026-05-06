@@ -18,6 +18,26 @@ try:
     _BUS = 1
     _ADDR = 0x10
     _HAS_SMBUS = True
+    # Verify relay is present at expected address
+    try:
+        with SMBus(_BUS) as _bus:
+            _bus.read_byte(_ADDR)
+        print(f'[RELAY] Found at I2C bus={_BUS} addr=0x{_ADDR:02x}')
+    except Exception:
+        # Scan common relay addresses
+        _found = False
+        for _try_addr in [0x10, 0x11, 0x20, 0x27]:
+            try:
+                with SMBus(_BUS) as _bus:
+                    _bus.read_byte(_try_addr)
+                _ADDR = _try_addr
+                _found = True
+                print(f'[RELAY] Found at I2C bus={_BUS} addr=0x{_ADDR:02x}')
+                break
+            except Exception:
+                continue
+        if not _found:
+            print(f'[RELAY] No relay board detected on I2C bus {_BUS}')
 except ImportError:
     _HAS_SMBUS = False
     print("smbus2 not installed — Relay module running in MOCK mode")

@@ -51,15 +51,15 @@
             size_hint_y: None
             height: sp(60) if root.step < root.step_count - 1 else sp(100)
 
-        # Control buttons row (hidden on confirm step)
+        # Numeric control buttons (for time/setpoint steps)
         BoxLayout:
             orientation: 'horizontal'
             size_hint_y: None
             height: sp(65)
             spacing: sp(8)
             padding: [sp(10), 0]
-            opacity: 0 if root.step == root.step_count - 1 else 1
-            disabled: root.step == root.step_count - 1
+            opacity: 1 if root.is_numeric_step else 0
+            disabled: not root.is_numeric_step
 
             # -5 button
             Button:
@@ -104,6 +104,66 @@
                 background_color: 0.2, 0.4, 0.2, 1
                 color: 1, 1, 1, 1
                 on_release: root.increment_big()
+
+        # ON/OFF toggle buttons (for boolean steps like humidifiers)
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(65)
+            spacing: sp(16)
+            padding: [sp(30), 0]
+            opacity: 1 if root.is_toggle_step else 0
+            disabled: not root.is_toggle_step
+
+            Button:
+                text: 'OFF'
+                font_size: sp(30)
+                bold: True
+                size_hint_x: 1
+                background_normal: ''
+                background_color: (0.6, 0.15, 0.15, 1) if root.is_toggle_step and not root.toggle_value else (0.3, 0.3, 0.35, 1)
+                color: 1, 1, 1, 1
+                on_release: root.set_toggle(False)
+
+            Button:
+                text: 'ON'
+                font_size: sp(30)
+                bold: True
+                size_hint_x: 1
+                background_normal: ''
+                background_color: (0.1, 0.55, 0.2, 1) if root.is_toggle_step and root.toggle_value else (0.3, 0.3, 0.35, 1)
+                color: 1, 1, 1, 1
+                on_release: root.set_toggle(True)
+
+        # Cycle buttons (for heat mode)
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint_y: None
+            height: sp(65)
+            spacing: sp(16)
+            padding: [sp(30), 0]
+            opacity: 1 if root.is_cycle_step else 0
+            disabled: not root.is_cycle_step
+
+            Button:
+                text: '<  Prev'
+                font_size: sp(26)
+                bold: True
+                size_hint_x: 1
+                background_normal: ''
+                background_color: 0.3, 0.3, 0.35, 1
+                color: 1, 1, 1, 1
+                on_release: root.decrement()
+
+            Button:
+                text: 'Next  >'
+                font_size: sp(26)
+                bold: True
+                size_hint_x: 1
+                background_normal: ''
+                background_color: 0.3, 0.3, 0.35, 1
+                color: 1, 1, 1, 1
+                on_release: root.increment()
 
         # Spacer
         Widget:

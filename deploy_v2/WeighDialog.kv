@@ -1,0 +1,80 @@
+#:import theme utils.theme
+
+<WeighDialog>:
+    auto_dismiss: False
+    title: 'Weigh Sample'
+    size_hint: None, None
+    size: sp(650), sp(550)
+    background: ''
+    background_color: theme.bg_color
+    separator_color: theme.weight_color
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(20)
+        spacing: sp(15)
+
+        # Status text
+        Label:
+            font_size: sp(22)
+            text: root.status_text
+            bold: True
+            color: theme.go_color if root.stable else theme.text_color
+            size_hint_y: None
+            height: sp(40)
+
+        # Large weight display
+        Widget:
+            size_hint_y: None
+            height: sp(10)
+        Label:
+            font_size: sp(72)
+            text: "{:.3f}".format(root.live_weight)
+            bold: True
+            color: theme.weight_color
+            size_hint_y: None
+            height: sp(90)
+        Label:
+            font_size: sp(28)
+            text: 'grams'
+            color: theme.weight_color
+            size_hint_y: None
+            height: sp(35)
+
+        Widget:
+
+        # Stability indicator bar
+        Label:
+            font_size: sp(18)
+            text: 'STABLE' if root.stable else 'READING...'
+            bold: True
+            color: theme.go_color if root.stable else theme.dry_color
+            size_hint_y: None
+            height: sp(30)
+
+        # Buttons
+        BoxLayout:
+            size_hint_y: None
+            height: sp(65)
+            spacing: sp(15)
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(24)
+                text: "TARE"
+                on_release: root.tare()
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(24)
+                text: "CANCEL"
+                on_release: root.dismiss()
+
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1.5
+                font_size: sp(28)
+                text: "FINISH" if root.finished else "CONTINUE"
+                bold: True
+                on_release: root.start()

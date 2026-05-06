@@ -16,6 +16,7 @@ Usage:
 
 import struct
 import time
+import threading
 
 try:
     import serial
@@ -24,9 +25,54 @@ except ImportError:
     _HAS_SERIAL = False
     print("pyserial not installed — RS485 module running in MOCK mode")
 
-PORT = '/dev/serial0'
 BAUD = 9600
 TIMEOUT = 1
+
+# Auto-detect RS485 serial port
+PORT = None
+if _HAS_SERIAL:
+    import glob as _glob
+    for _candidate in ['/dev/serial0', '/dev/ttyAMA0', '/dev/ttyS0'] + sorted(_glob.glob('/dev/ttyUSB*')):
+        try:
+            _test = serial.Serial(_candidate, BAUD, timeout=0.5)
+            _test.close()
+            PORT = _candidate
+            print(f'[RS485] Found at {PORT}')
+            break
+        except Exception:
+            continue
+    if PORT is None:
+        PORT = '/dev/serial0'  # fallback
+        print(f'[RS485] No port detected, falling back to {PORT}')
+
+# ── Shared serial connection ──
+# Multiple sensors share one RS485 bus, so we need a single serial object
+# with a lock to prevent collisions between humidity and power reads.
+_shared_serial = None
+_serial_lock = threading.Lock()
+
+
+def _get_shared_serial():
+    """Return the shared serial port, opening it once on first call."""
+    global _shared_serial
+    if _shared_serial is not None and _shared_serial.is_open:
+        return _shared_serial
+    if not _HAS_SERIAL:
+        return None
+    try:
+        _shared_serial = serial.Serial(
+            PORT,
+            baudrate=BAUD,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=TIMEOUT
+        )
+        print(f'[RS485] Shared serial opened on {PORT}')
+        return _shared_serial
+    except Exception as e:
+        print(f'[RS485] Failed to open shared serial: {e}')
+        return None
 
 
 def _crc16(data: bytes) -> int:
@@ -69,20 +115,20 @@ class HumiditySenosr:
 
         Args:
             address: Modbus slave address (1 for humidity, 3 for power)
+
+        Uses the module-level shared serial connection so multiple sensors
+        (humidity addr=1, power addr=3) don't fight over the same port.
         """
         self.address = address
         if _HAS_SERIAL:
             try:
-                if self.ser is None or not self.ser.is_open:
-                    self.ser = serial.Serial(
-                        PORT,
-                        baudrate=BAUD,
-                        bytesize=serial.EIGHTBITS,
-                        parity=serial.PARITY_NONE,
-                        stopbits=serial.STOPBITS_ONE,
-                        timeout=TIMEOUT
-                    )
-                self.connected = True
+                self.ser = _get_shared_serial()
+                if self.ser is not None and self.ser.is_open:
+                    self.connected = True
+                    print(f'[RS485] Sensor addr={address} attached to shared port')
+                else:
+                    print(f'[RS485] Sensor addr={address} — shared port not available')
+                    self.connected = False
             except Exception as e:
                 print(f"RS485 connect error (addr {address}): {e}")
                 self.connected = False
@@ -100,35 +146,37 @@ class HumiditySenosr:
         if not _HAS_SERIAL or not self.connected:
             return [25.0, 50.0]  # mock values
 
-        try:
-            # Function code 3: Read Holding Registers
-            # Register 0 = temperature (×10), Register 1 = humidity (×10)
-            request = _build_request(self.address, 0x03, 0x0000, 2)
-            self.ser.reset_input_buffer()
-            self.ser.write(request)
-            time.sleep(0.1)
+        with _serial_lock:
+            try:
+                # Function code 3: Read Holding Registers
+                # Register 0 = temperature (×10), Register 1 = humidity (×10)
+                request = _build_request(self.address, 0x03, 0x0000, 2)
+                self.ser.reset_input_buffer()
+                self.ser.write(request)
+                time.sleep(0.1)
 
-            # Response: addr(1) + func(1) + byte_count(1) + data(4) + crc(2) = 9 bytes
-            response = self.ser.read(9)
-            if len(response) >= 9:
-                # Parse two 16-bit registers
-                temp_raw = struct.unpack('>H', response[3:5])[0]
-                humd_raw = struct.unpack('>H', response[5:7])[0]
-                # Sensors typically report ×10 (e.g., 251 = 25.1°C)
-                temperature = temp_raw / 10.0
-                humidity = humd_raw / 10.0
-                return [temperature, humidity]
-            else:
+                # Response: addr(1) + func(1) + byte_count(1) + data(4) + crc(2) = 9 bytes
+                response = self.ser.read(9)
+                if len(response) >= 9:
+                    # Parse two 16-bit registers
+                    temp_raw = struct.unpack('>H', response[3:5])[0]
+                    humd_raw = struct.unpack('>H', response[5:7])[0]
+                    # Sensors typically report ×10 (e.g., 251 = 25.1°C)
+                    temperature = temp_raw / 10.0
+                    humidity = humd_raw / 10.0
+                    self._error_logged = False  # reset on success
+                    return [temperature, humidity]
+                else:
+                    if not self._error_logged:
+                        print(f"RS485 sensor addr {self.address}: no response (sensor not connected?)")
+                        self._error_logged = True
+                    return [0.0, 0.0]
+
+            except Exception as e:
                 if not self._error_logged:
-                    print(f"RS485 sensor addr {self.address}: no response (sensor not connected?)")
+                    print(f"RS485 read error: {e}")
                     self._error_logged = True
                 return [0.0, 0.0]
-
-        except Exception as e:
-            if not self._error_logged:
-                print(f"RS485 read error: {e}")
-                self._error_logged = True
-            return [0.0, 0.0]
 
     def read_power(self) -> float:
         """Read power from power sensor.
@@ -139,33 +187,33 @@ class HumiditySenosr:
         if not _HAS_SERIAL or not self.connected:
             return 0.0  # mock value
 
-        try:
-            # Function code 4: Read Input Registers
-            # Register 3 = power
-            request = _build_request(self.address, 0x04, 0x0003, 1)
-            self.ser.reset_input_buffer()
-            self.ser.write(request)
-            time.sleep(0.1)
+        with _serial_lock:
+            try:
+                # Function code 4: Read Input Registers
+                # Register 3 = power
+                request = _build_request(self.address, 0x04, 0x0003, 1)
+                self.ser.reset_input_buffer()
+                self.ser.write(request)
+                time.sleep(0.1)
 
-            # Response: addr(1) + func(1) + byte_count(1) + data(2) + crc(2) = 7 bytes
-            response = self.ser.read(7)
-            if len(response) >= 7:
-                power_raw = struct.unpack('>H', response[3:5])[0]
-                return power_raw / 10.0
-            else:
+                # Response: addr(1) + func(1) + byte_count(1) + data(2) + crc(2) = 7 bytes
+                response = self.ser.read(7)
+                if len(response) >= 7:
+                    power_raw = struct.unpack('>H', response[3:5])[0]
+                    self._error_logged = False
+                    return power_raw / 10.0
+                else:
+                    if not self._error_logged:
+                        print(f"RS485 power sensor addr {self.address}: no response (sensor not connected?)")
+                        self._error_logged = True
+                    return 0.0
+
+            except Exception as e:
                 if not self._error_logged:
-                    print(f"RS485 power sensor addr {self.address}: no response (sensor not connected?)")
+                    print(f"RS485 power read error: {e}")
                     self._error_logged = True
                 return 0.0
 
-        except Exception as e:
-            if not self._error_logged:
-                print(f"RS485 power read error: {e}")
-                self._error_logged = True
-            return 0.0
-
     def close(self):
-        """Close serial port."""
-        if self.ser and self.ser.is_open:
-            self.ser.close()
+        """Disconnect this sensor (does NOT close shared serial)."""
         self.connected = False

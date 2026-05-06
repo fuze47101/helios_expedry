@@ -1,0 +1,108 @@
+#:import theme utils.theme
+
+<WeighDialog>:
+    auto_dismiss: False
+    title: 'Weigh Sample'
+    size_hint: None, None
+    size: sp(650), sp(600)
+    background: ''
+    background_color: theme.bg_color
+    separator_color: theme.go_color
+    BoxLayout:
+        orientation: 'vertical'
+        padding: sp(15)
+        spacing: sp(15)
+        Widget:
+        Label:
+            font_size: sp(30)
+            text_size: self.size
+            text: 'WEIGH SAMPLE AND RECORD VALUE BEFORE PROCEEDING'
+        BoxLayout:
+            orientation: 'horizontal'
+            spacing: sp(15)
+            BoxLayout: 
+                orientation: 'vertical'
+                spacing: sp(10)
+                Label:
+                    font_size: sp(35)
+                    bold: True
+                    text: 'START WT'
+                NeuCard:
+                    size_hint_y: None
+                    height: sp(50)
+                    radius: sp(10)
+                    comp_color: [1,1,1,1]
+                    light_color: [0.14, 0.15, 0.18]
+                    dark_color: [0.54, 0.55, 0.58]
+                    padding:sp(5)
+                    TextInput:
+                        id: title_input
+                        background_color: [1,1,1,1]
+                        background_normal: ''
+                        background_active: ''
+                        cursor_color: [0,0,0,1]
+                        font_size: sp(35)
+                        #text: root.title                
+            BoxLayout: 
+                orientation: 'vertical'
+                spacing: sp(10)
+                Label:
+                    font_size: sp(35)
+                    bold: True
+                    text: 'WET WT'
+                NeuCard:
+                    size_hint_y: None
+                    height: sp(50)
+                    radius: sp(10)
+                    comp_color: [1,1,1,1]
+                    light_color: [0.14, 0.15, 0.18]
+                    dark_color: [0.54, 0.55, 0.58]
+                    padding:sp(5)
+                    TextInput:
+                        id: title_input
+                        background_color: [1,1,1,1]
+                        background_normal: ''
+                        background_active: ''
+                        cursor_color: [0,0,0,1]
+                        font_size: sp(35)
+                        #text: root.title                
+            BoxLayout: 
+                orientation: 'vertical'
+                spacing: sp(10)
+                Label:
+                    font_size: sp(35)
+                    bold: True
+                    text: 'END WT'
+                NeuCard:
+                    size_hint_y: None
+                    height: sp(50)
+                    radius: sp(10)
+                    comp_color: [1,1,1,1]
+                    light_color: [0.14, 0.15, 0.18]
+                    dark_color: [0.54, 0.55, 0.58]
+                    padding:sp(5)
+                    TextInput:
+                        id: title_input
+                        background_color: [1,1,1,1]
+                        background_normal: ''
+                        background_active: ''
+                        cursor_color: [0,0,0,1]
+                        font_size: sp(35)
+                        #text: root.title      
+        Widget:
+        BoxLayout:
+            size_hint_y: None
+            height: sp(65)
+            spacing: sp(15)
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(32)
+                text: "CANCEL"
+                on_release: root.dismiss()
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(32)
+                text: "FINISH" if root.finished else "CONTINUE"
+                on_release: root.start()

@@ -1,0 +1,59 @@
+<SaveDialog>:
+    text_input: text_input
+    title: 'Save Data'
+    title_size: sp(24)
+    BoxLayout:
+        canvas.before:
+            Color:
+                rgba: theme.bg_color
+            Rectangle:
+                pos: self.pos
+                size: self.size
+        orientation: "vertical"
+        padding: sp(15)
+        spacing: sp(15)
+        FileChooserIconView:
+            id: filechooser
+            on_selection: text_input.text = self.selection and self.selection[0] or ''
+            path: root.get_default_path()
+            filters: [lambda folder, filename: not filename.endswith('')]
+        BoxLayout:
+            orientation: 'horizontal'
+            spacing: sp(15)
+            height: sp(48)
+            Label: 
+                size_hint_x: None
+                width: sp(150)
+                size_hint_y: None
+                height: sp(48)
+                font_size: sp(32)
+                text: 'File Name:'
+            TextInput:
+                id: text_input
+                size_hint_y: None
+                height: sp(48)
+                multiline: False
+                font_size: sp(32)
+            Label: 
+                size_hint_x: None
+                width: sp(100)
+                size_hint_y: None
+                height: sp(48)
+                font_size: sp(32)
+                text: '.xlsx'
+        BoxLayout:
+            size_hint_y: None
+            height: sp(65)
+            spacing: sp(15)
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(32)
+                text: "Cancel"
+                on_release: root.dismiss()
+            NeuRoundedButton:
+                size_hint_y: 1
+                size_hint_x: 1
+                font_size: sp(32)
+                text: "Save"
+                on_release: root.save(filechooser.path)

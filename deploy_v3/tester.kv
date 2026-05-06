@@ -35,17 +35,20 @@
     height: sp(42)
 
 <PhaseBadge@Label>:
-    font_size: sp(24)
+    font_size: sp(32)
     bold: True
     size_hint_y: None
-    height: sp(40)
+    height: sp(55)
+    halign: 'center'
+    valign: 'middle'
+    text_size: self.size
     canvas.before:
         Color:
-            rgba: theme.wet_color if root.text == 'WET' else (theme.dry_color if 'DRY' in root.text else (theme.go_color if root.text == 'COMPLETE' else theme.idle_color))
+            rgba: theme.wet_color if 'WET' in root.text else (theme.dry_color if 'DRY' in root.text else (theme.go_color if root.text == 'COMPLETE' else ((1, 0.2, 0.2, 1) if 'FAIL' in root.text else theme.idle_color)))
         RoundedRectangle:
             pos: self.x + sp(4), self.y + sp(4)
             size: self.width - sp(8), self.height - sp(8)
-            radius: [sp(6)]
+            radius: [sp(8)]
 
 # ── Main Layout (Portrait Optimized) ──
 
@@ -151,10 +154,11 @@
                                 bold: True
                                 font_size: sp(18)
                                 on_release: root.test_mode = 'Wet_Thermal'
-                    PhaseBadge:
-                        size_hint_x: None
-                        width: sp(100)
-                        text: root.test_phase
+
+                # Phase badge — full width, big and centered
+                PhaseBadge:
+                    size_hint_x: 1
+                    text: root.test_phase
 
                 # Sensor data — 2 columns
                 BoxLayout:

@@ -1,0 +1,122 @@
+#:import theme utils.theme
+#:import NeuApp neukivy.app
+
+<Connection@BoxLayout>:
+    orientation: 'horizontal'
+    size_hint_y: None
+    height: sp(60)
+    spacing: sp(30)
+
+<SettingsDialog>:
+    auto_dismiss: False
+    title: 'Connections'
+    title_size: sp(24)
+    size_hint: None, None
+    size: sp(650), sp(600)
+    background: ''
+    background_color: theme.bg_color
+    separator_color: theme.go_color
+    BoxLayout:
+        canvas.before:
+            Color:
+                rgba: theme.bg_color
+            Rectangle:
+                pos: self.pos
+                size: self.size
+        orientation: 'vertical'
+        padding: sp(15)
+        spacing: sp(15)
+        Label:
+            # text: root.error_message
+            font_size: sp(30)
+            color: theme.stop_color
+        Connection:
+            Widget:
+            Label:
+                font_size: sp(32)
+                bold: True
+                text: "Humidity Sensor"
+                size_hint_y: 1
+                size_hint_x: None
+                width: sp(250)
+            NeuCard:
+                elevation: 2
+                comp_color: theme.go_color if app.root.humid_connected else theme.stop_color 
+                size_hint: (None, None)
+                width: sp(60)
+                height: sp(60)
+                radius: sp(30)
+            NeuRoundedButton:
+                text: "Connect"
+                font_size: sp(30)
+                bold: True
+                size_hint_x: None
+                size_hint_y: None
+                height: sp(60)
+                width: sp(150)
+                on_press: root.connect_humid()
+                disabled: app.root.humid_connected
+            Widget:
+        Connection:
+            Widget:
+            Label:
+                font_size: sp(32)
+                bold: True
+                text: "Controller"
+                size_hint_y: 1
+                size_hint_x: None
+                width: sp(250)
+            NeuCard:
+                elevation: 2
+                comp_color: theme.go_color if app.root.relay_connected else theme.stop_color 
+                size_hint: (None, None)
+                width: sp(60)
+                height: sp(60)
+                radius: sp(30)
+            NeuRoundedButton:
+                text: "Connect"
+                font_size: sp(30)
+                bold: True
+                size_hint_x: None
+                size_hint_y: None
+                height: sp(60)
+                width: sp(150)
+                on_press: root.connect_relay()
+                disabled: app.root.relay_connected
+            Widget:
+        Connection:
+            Widget:
+            Label:
+                font_size: sp(32)
+                bold: True
+                text: "Power Meter"
+                size_hint_y: 1
+                size_hint_x: None
+                width: sp(250)
+            NeuCard:
+                elevation: 2
+                comp_color: theme.go_color if app.root.power_connected else theme.stop_color 
+                size_hint: (None, None)
+                width: sp(60)
+                height: sp(60)
+                radius: sp(30)
+            NeuRoundedButton:
+                text: "Connect"
+                font_size: sp(30)
+                bold: True
+                size_hint_x: None
+                size_hint_y: None
+                height: sp(60)
+                width: sp(150)
+                on_press: root.connect_power()
+                disabled: app.root.power_connected
+            Widget:
+        Widget:
+        NeuRoundedButton:
+            size_hint_x: 1
+            size_hint_y: None
+            height: sp(60)
+            text: 'Close'
+            font_size: sp(32)
+            on_release: root.dismiss()
+                    

@@ -24,6 +24,7 @@ Test flow:
 from os.path import join, dirname
 
 from kivy.app import App
+from kivy.factory import Factory
 from kivy.lang import Builder
 from kivy.properties import (
     BooleanProperty, NumericProperty, StringProperty, ListProperty
@@ -76,6 +77,10 @@ class SetupWizard(Popup):
     step_description = StringProperty('')
     step_value = StringProperty('')
     step_count = NumericProperty(7)  # 6 config + 1 confirm
+    is_numeric_step = BooleanProperty(True)
+    is_toggle_step = BooleanProperty(False)
+    is_cycle_step = BooleanProperty(False)
+    toggle_value = BooleanProperty(False)
 
     steps = ListProperty([
         {
@@ -138,6 +143,11 @@ class SetupWizard(Popup):
         s = self.steps[self.step]
         self.step_title = s['title']
 
+        # Set step-type flags for KV layout switching
+        self.is_numeric_step = not s.get('toggle') and not s.get('cycle') and not s.get('confirm')
+        self.is_toggle_step = bool(s.get('toggle'))
+        self.is_cycle_step = bool(s.get('cycle'))
+
         if s.get('confirm'):
             heat = HEAT_MODES[self.heat_mode_index]
             ext = 'ON' if self.external_hum else 'OFF'
@@ -153,6 +163,7 @@ class SetupWizard(Popup):
         elif s.get('toggle'):
             self.step_description = s['desc']
             val = getattr(self, s['prop'])
+            self.toggle_value = val
             self.step_value = 'ON' if val else 'OFF'
         elif s.get('cycle'):
             self.step_description = s['desc']
@@ -178,6 +189,13 @@ class SetupWizard(Popup):
             new_val = max(s['min'], min(val + amount, s['max']))
             setattr(self, s['prop'], new_val)
         self._update_display()
+
+    def set_toggle(self, value):
+        """Explicitly set a boolean step to True or False."""
+        s = self.steps[self.step]
+        if s.get('toggle'):
+            setattr(self, s['prop'], value)
+            self._update_display()
 
     def increment(self):
         self._adjust(1)
@@ -212,7 +230,7 @@ class SetupWizard(Popup):
             self._update_display()
 
     def _start_test(self):
-        """Apply settings to the app and start the test."""
+        """Apply settings to the app, then open sample placement dialog."""
         root = self.app.root
 
         # Store wizard parameters
@@ -228,6 +246,5 @@ class SetupWizard(Popup):
 
         self.dismiss()
 
-        # Tare the scale and start
-        root.tare_scale()
-        root.start_test()
+        # Open sample placement dialog — it will tare and start when ready
+        Factory.SampleDialog().open()
