@@ -611,6 +611,7 @@ All parts renamed to V4 to track this morning's changes. Material: TPU 95A.
 | `FUZE_Capsule Cap V4.stl` (96 KB) | Cap — 166mm disk, 153mm outer lip, 90.4mm inner lip | 1 (PRINTED ✓) |
 | `FUZE_OuterPanel_V4.stl` (83 KB) | Outer panel — both edges female T-slots, 258.3mm wide | 2 |
 | `FUZE_InnerColumn_V4.stl` (15 KB) | Inner column — thin wall, lap joint tabs | 2 |
+| `FUZE_CapsuleFrame_V4_InnerHalf.stl` | Inner half V4 — wraps OUTSIDE cap inner ring (90.4mm OD), 142mm × 235.6mm × 3.5mm, voxel-based manifold-clean | 2 |
 | `FUZE_CouplerKeys_V4.stl` (54 KB) | 18 solid dogbone coupler keys on one plate | 1 |
 
 #### Outer Panel V4 — Both Edges Female
@@ -636,6 +637,18 @@ All parts renamed to V4 to track this morning's changes. Material: TPU 95A.
 - Mesh pause at layer 8 (Z=1.5mm at 0.2mm layer height)
 - **Print TWO identical copies, glue + clamp at lap seams**
 - Generator: `gen_inner_column.py`
+
+#### Inner Half V4 — Wraps Outside Cap Inner Ring (May 2026)
+- **Design change:** Inner half now wraps OUTSIDE the V2b cap inner ring (90.4mm OD) instead of fitting inside it. This accommodates silicone tape wrapping on the aluminum column.
+- **Wrap width:** 142.0mm (half circumference of 90.4mm OD ring: π × 90.4 / 2)
+- **Panel:** 142.0 × 235.6 × 3.5mm
+- **Grid:** 4 longitudinal × 3 transverse ribs, voxel-based geometry (no internal shared faces)
+- **Snap assembly:** 19 snap posts on left edge (3mm head, 2.5mm shaft, 2mm tall, 12mm spacing), 19 snap holes on right edge
+- **Overlap flaps:** Half-thickness (1.75mm each) for flush snap-together seam
+- **Mesh pause:** At Z=1.75mm (layer 9 at 0.2mm layer height)
+- **STL quality:** Fully manifold — 0 boundary edges, 0 non-manifold edges (voxel grid + bottom caps on all snap posts)
+- **Generator:** Python voxel-based STL generator (run in session, output to Desktop)
+- **Print TWO identical copies, snap together around cap inner ring**
 
 #### Cap V4 — Printed and Confirmed
 - 166mm outer disk diameter
@@ -695,31 +708,72 @@ New components wiring into existing Pi + relay HAT enclosure:
 - **Pull-down resistor recommended:** 10kΩ between GPIO17 and GND to prevent floating HIGH at boot triggering SSR
 - **Andrew's preference:** Use SSR for heater control, NOT the relay HAT. Relay HAT reserved for humidifier, pump, other loads.
 
-#### Pi GPIO Allocation (Helios Pi)
-| Pin | GPIO | Function | Status |
-|-----|------|----------|--------|
-| Pin 1 | 3.3V | Power — SHT41, SDP810, MAX31855 | Wired |
-| Pin 3 | GPIO2 (SDA) | I2C — SHT41 (0x44) + SDP810 (0x25) | **Validated** |
-| Pin 5 | GPIO3 (SCL) | I2C — SHT41 + SDP810 | **Validated** |
-| Pin 6 | GND | Common ground bus (SSR, sensors) | Wired |
-| Pin 7 | GPIO4 | 1-Wire — DS18B20 (needs 4.7kΩ pull-up) | Planned |
-| Pin 11 | **GPIO17** | **SSR trigger (+) for cartridge heaters** | **Validated** |
-| Pin 21 | GPIO9 (MISO) | SPI — MAX31855 DO | **Validated** |
-| Pin 23 | GPIO11 (SCLK) | SPI — MAX31855 CLK | **Validated** |
-| Pin 24 | GPIO8 (CE0) | SPI — MAX31855 CS | **Validated** |
-| Relay HAT | Channels 1-4 | Humidifier, pump, TBD (addr 0x10) | Existing |
+#### Pi GPIO Allocation (Helios Pi) — UPDATED May 11, 2026
+**All pins moved off hardware SPI/I2C due to CAN HAT conflicts. Now using software SPI + software I2C (bus 15).**
 
-#### Relay HAT
-- 4-channel relay DDL board (orange HUI KE relays)
-- I2C controlled, addr=0x10
-- **INVERTED LOGIC:** 0x00 = relay ON, 0xFF = relay OFF
-- Protocol: `bus.write_byte_data(0x10, channel, value)` where channel=1-4
-- DIP switches: both OFF
-- Channel allocation:
-  - CH1: Sonic humidifier (existing)
-  - CH2: **Peristaltic pump** (INTLLAB DP-DIY, 12V 5W, 0.42A)
-  - CH3: Available
-  - CH4: Available
+| Pin | GPIO | Function | Wire Color | Status |
+|-----|------|----------|------------|--------|
+| Pin 1 | 3.3V | Power rail → solder board 3V3 bus | Red (MAX31855), also solder board rail | **Soldered** |
+| Pin 6 | GND | Ground rail → solder board GND bus | White (MAX31855), also solder board rail | **Soldered** |
+| Pin 9 | GND | SSR terminal #4 (−) trigger ground | — | **Soldered** |
+| Pin 13 | **GPIO27** | **SSR terminal #3 (+) heater trigger** | — | **Soldered** |
+| Pin 15 | **GPIO22** | Software I2C SDA → solder board SDA bus | Purple (Pi→solder board) | **Soldered** |
+| Pin 22 | **GPIO25** | Software I2C SCL → solder board SCL bus | — | **Soldered** |
+| Pin 33 | **GPIO13** | Software SPI CLK → MAX31855 CLK | Orange | **Soldered** |
+| Pin 36 | **GPIO16** | Software SPI CS → MAX31855 CS | Brown | **Soldered** |
+| Pin 38 | **GPIO20** | Software SPI MISO → MAX31855 DO | Yellow | **Soldered** |
+
+**Software I2C overlay required:** `dtoverlay=i2c-gpio,i2c_gpio_sda=22,i2c_gpio_scl=25,bus=15` in `/boot/firmware/config.txt`
+
+#### Sensor Wire Colors (Confirmed May 11, 2026)
+
+**MAX31855 (Puck Thermocouple — Software SPI):**
+| Wire | Destination |
+|------|-------------|
+| Red | 3.3V (Pi Pin 1) |
+| White | GND (Pi Pin 6) |
+| Yellow | Pin 38 (GPIO20 MISO) |
+| Brown | Pin 36 (GPIO16 CS) |
+| Orange | Pin 33 (GPIO13 CLK) |
+
+**SHT41 (Chamber Temp + Humidity — I2C Bus 15, addr 0x44):**
+| Wire | Destination |
+|------|-------------|
+| Green | SCL on solder board (GPIO25) + 10kΩ pull-up to 3V3 |
+| Blue | GND on solder board |
+| Yellow | SDA on solder board (GPIO22) + 10kΩ pull-up to 3V3 |
+| Purple | 3.3V on solder board |
+
+**SDP810 (Differential Pressure — I2C Bus 15, addr 0x25):**
+Physical pinout: Pin 1=SDA, Pin 2=GND, Pin 3=VDD, Pin 4=SCL
+| Wire | Destination | SDP810 Pin |
+|------|-------------|------------|
+| Yellow | SDA on solder board (GPIO22) | Pin 1 |
+| Orange | GND on solder board | Pin 2 |
+| Red | 3.3V on solder board | Pin 3 |
+| Brown | SCL on solder board (GPIO25) | Pin 4 |
+
+**SSR-10 DD (Cartridge Heater Control):**
+| Terminal | Destination |
+|----------|-------------|
+| #3 (+) | Pi Pin 13 (GPIO27) |
+| #4 (−) | Pi Pin 9 (GND) |
+
+#### Permanent Wiring Hardware (May 2026)
+- **Breakout board:** Electronics-Salon IDC-40 D-224 v1.0 — screw terminals for all 40 Pi GPIO pins
+- **Ribbon cable:** 40-pin IDC ribbon from Pi header to breakout board (screw-lock connector)
+- **Solder perfboard:** Perfboard with JST connectors for each sensor harness
+- **Pull-up resistors:** 2× 10kΩ soldered on solder board from 3.3V rail to SDA and SCL buses
+- **Bus architecture:** 3.3V rail, GND rail, SDA bus, SCL bus on solder board — sensors plug in via JST
+
+#### Waveshare Modbus RTU Relay (replaced old I2C relay HAT)
+- RS485 via CAN HAT on `/dev/ttyAMA0`, 9600 baud
+- Modbus device ID: 1
+- Channel allocation (coil addresses):
+  - Coil 1 (CH2): Peristaltic pump
+  - Coil 3 (CH4): Exhaust fan
+  - Coil 5 (CH6): Sonic humidifier
+- Protocol: `pymodbus.client.ModbusSerialClient` — `write_coil(coil_addr, True/False, device_id=1)`
 
 #### Peristaltic Pump
 - **Model:** INTLLAB DP-DIY — 12V, 5W (0.42A)
@@ -727,15 +781,31 @@ New components wiring into existing Pi + relay HAT enclosure:
 - **Speed:** Full speed is WAY too fast for drip application — needs pulse control (0.5s ON / 10-15s OFF)
 - **Polarity:** Red dot on plastic housing = positive terminal. Wrong polarity = reverse flow direction (just swap leads)
 
-#### Validated Systems (2026-04-29)
-- [x] SSR-10 DD — polarity fixed, GPIO17 toggle test passed
-- [x] SDP810 differential pressure — I2C 0x25, reading 0.00 Pa (correct at rest)
-- [x] SHT41 temp/humidity — I2C 0x44, reading 74.9°F / 30.7% RH
-- [x] MAX31855 thermocouple — SPI CE0, reading 78.3°F (puck temp)
-- [x] Heater cartridge — SSR fires on GPIO17 HIGH, shuts off on LOW
-- [x] Peristaltic pump — Relay CH2, ON/OFF validated from Pi
+#### Validated Systems (updated May 11, 2026)
+- [x] SSR-10 DD — GPIO27 (Pin 13) trigger (+), Pin 9 GND trigger (−)
+- [x] SDP810 differential pressure — Software I2C bus 15, addr 0x25
+- [x] SHT41 temp/humidity — Software I2C bus 15, addr 0x44
+- [x] MAX31855 thermocouple — Software SPI (CLK=GPIO13, MISO=GPIO20, CS=GPIO16)
+- [x] Heater cartridge — SSR fires on GPIO27 HIGH, shuts off on LOW
+- [x] Peristaltic pump — Waveshare Modbus RTU Relay CH2 (coil 1)
+- [x] Exhaust fan — Waveshare Modbus RTU Relay CH4 (coil 3)
+- [x] Sonic humidifier — Waveshare Modbus RTU Relay CH6 (coil 5)
 - [x] **Web dashboard** — Flask app at http://<pi-ip>:5000, live sensor charts + controls
-- [x] **All 4 sensors + 2 actuators running simultaneously on dashboard**
+- [x] **All 4 sensors + 3 actuators running simultaneously on dashboard**
+- [x] **RS232 scale** — Bonvoisin 500g×0.001g, /dev/ttyUSB0 (Prolific USB-Serial), 9600/8N1
+- [x] **Scale on dashboard** — Weight card (g, stable/unstable indicator), TARE button, weight chart (4th chart, pink #f472b6)
+- [x] **systemd service** — `helios.service`, Restart=always, auto-starts on boot
+- [x] **Permanent wiring** — IDC-40 breakout + solder perfboard with JST connectors, 10kΩ pull-ups soldered (May 11, 2026)
+
+#### helios_control.py — Standalone Flask Dashboard (May 2026)
+- **Location on Pi:** `/home/allied2/helios_control.py`
+- **Service:** `sudo systemctl {start|stop|restart|status} helios`
+- **Logs:** `journalctl -u helios -f`
+- **Scale integration:** pyserial background thread with auto-reconnect, parses "ST,  0.260 g" / "US,  0.123 g" / plain formats
+- **Tare:** POST `/api/tare` sends `T\r\n` to scale
+- **History entry fields:** ts, tmp, hum, prs, pwr, wt (weight added May 2026)
+- **Deploy from Mac:** `scp helios_control.py allied2@<pi-ip>:/home/allied2/` then `sudo systemctl restart helios`
+- **Kiosk refresh:** After deploy, `pkill -f chromium` on Pi to force browser reload (cache is aggressive)
 
 #### Known Issue: MAX31855 TC Short to GND
 - Intermittent "TC short to GND" fault when thermocouple tip contacts aluminum puck directly
@@ -757,11 +827,15 @@ New components wiring into existing Pi + relay HAT enclosure:
 - [ ] Test full steam generation cycle: heat puck to 250°F → pulse water → monitor humidity rise
 
 #### TODO (Post-Demo)
-- [ ] Add 10kΩ pull-down resistor on GPIO17 → GND (boot safety)
+- [x] **Permanent wiring:** Electronics-Salon IDC-40 breakout + solder perfboard with JST connectors + 10kΩ pull-ups — SOLDERED May 11, 2026
+- [ ] Add 10kΩ pull-down resistor on GPIO27 → GND (boot safety — prevents heater activation during boot)
 - [ ] Wire DS18B20 to GPIO4 (4.7kΩ pull-up needed)
 - [ ] Add PID temperature control to dashboard
 - [ ] Add CSV data logging for test runs
 - [ ] PWM pump speed control via MOSFET (replace relay for finer flow rate)
+- [ ] Make i2c-gpio overlay permanent in /boot/firmware/config.txt (dtoverlay=i2c-gpio,i2c_gpio_sda=22,i2c_gpio_scl=25,bus=15)
+- [ ] Verify scale readings on dashboard after permanent wiring
+- [ ] First power-on test with permanent wiring — run component_test.py
 
 ## Related Projects
 | Project | Repo | Description |
