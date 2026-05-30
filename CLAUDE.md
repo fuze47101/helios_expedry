@@ -8,6 +8,93 @@
 - **Andrew's email**: `andrew@fuze47.com` (NOT andrew@801inc.com)
 - **Nike context**: The April 2026 meeting is a **follow-up** to the Portland meeting from 2 weeks prior (early April 2026). Never frame it as a first pitch.
 
+## Helios v2 — Wine Fridge Build (Major Overhaul, May 13, 2026)
+This SUPERSEDES the old 12×12×13" test box build. The original box is being abandoned for a much larger purpose-built chamber inside a converted wine fridge.
+
+### Two Distinct Tests (LOCKED — do not lose this)
+The Helios apparatus must support BOTH of these tests:
+
+**Test 1 — Jacket Moisture Egress (sweat-through testing):**
+- Heated 3" aluminum column = body simulator at ~95-100°F
+- 2× 12V 40W cartridge heaters inside column base, water dripped on heated puck via peristaltic pump
+- Generates steam INSIDE the column = simulated sweat
+- Jacket layer stack wrapped on column (inner liner / down or fill / outer shell)
+- Vapor pressure pushes sweat outward through the layer stack
+- SDP810 measures ΔP across layers; SHT41 measures column-internal RH
+- Chamber background = COLD + DRY (winter outdoor conditions; drives outward vapor pressure gradient)
+- Classic skin-model / sweating-hot-plate physics (similar to ISO 11092)
+
+**Test 2 — Free-Form Down Moisture Pickup (capsule on load cell):**
+- Concentric mesh TPU capsule (V4) holds free-form down (treated Expedry Gold vs untreated control)
+- Capsule HANGS from the load cell (top-mount) over the heated column
+- Chamber must be HIGH RH + variable temp (humid wear/storage simulation)
+- Capsule drops over the column with 1.9mm radial clearance per side
+- Down absorbs water vapor from the humid chamber air
+- Load cell weight gain over time = moisture absorption rate
+- Test compares treated vs untreated under matched conditions
+
+### Chamber (Wine Fridge Conversion)
+- Top compartment of repurposed wine fridge becomes the test chamber
+- Dimensions: 20" W × 18" D × 31" H = ~150 L volume (~5× the old box)
+- Glass door retained (some leakage OK)
+- All factory shelving removed; only side wall metal ledges remain
+- Aluminum cross-members slide in on those ledges to support load cell + heated column plate
+- Fluorescent light at top retained for visibility / IR camera baseline
+- Refrigeration capability preserved for cold testing (cold + humid + cold + dry modes)
+
+### Load Cell (Bonvoisin disassembled, hanging)
+- Bonvoisin analytical balance stripped down to bare strain-gauge beam
+- Validated to read in negative direction (hanging load OK)
+- Same 500g / 0.001g resolution; capsule target weight ~350g unchanged
+- Beam mounts to steel L-bracket on aluminum cross-members across chamber top
+- Free end has machined aluminum extension with M5 bolts for capsule hook attachment
+- Capsule hangs from the beam's free end via wire/cable
+
+### Heated Column Mount (welded)
+- 3" (76.2mm) OD × 228.6mm (9.0") tall aluminum tube (existing from old build)
+- Weld to ~150×150×6mm (¼" thick) aluminum baseplate with 76.2mm center bore
+- Plate has 4 corner M6 holes for cross-member mounting
+- Rubber thermal-isolation grommets between plate and cross-members
+- Tube extends BELOW plate ~30-50mm for cartridge heater base
+
+### Humidifier (Test 2 background) — PURE VAPOR required, not fog
+**Critical:** Ultrasonic piezo foggers produce 1-5μm droplets, NOT vapor. Droplets settle on the down sample directly and contaminate weight readings. For Test 2, use ONLY boiling-water (warm mist) humidifiers that emit pure vapor.
+
+Recommended unit (May 13 2026):
+- TURBRO Greenland GLS04 Stainless Steel Steam Humidifier — 4L tank, 500mL/h, 304 SS boiler, ~$120
+- Plug into mains via SSR-25DA (DC trigger, AC output) controlled by Pi GPIO
+- GFCI outlet upstream (mandatory — water + mains)
+- Pi runs closed-loop PID using a SECOND SHT41 mounted inside the chamber → switches mains on/off to maintain setpoint ±2% RH
+
+### Sensors Needed
+- **Existing SHT41 (in-column)** — measures inside the heated column (sweat-side RH/T for Test 1)
+- **NEW SHT41 (in-chamber)** — chamber background RH/T for Test 2 humidity control loop
+- **SDP810** — pressure differential across jacket layer stack (Test 1)
+- **MAX31855 + K-type TC** — puck temperature
+- **Load cell** — capsule weight (Test 2)
+
+### IR Cameras (last install)
+- Currently have 1 camera in hand
+- Cameras live INSIDE the chamber, view jacket sleeve over heated column
+- Looking for heat bleed-through patterns on the outer shell layer
+- Possibly add a second from different angle later
+
+### Electronics Enclosure
+- Pi + relay HAT + SSRs + signal conditioning all live in EXTERNAL enclosure mounted on back of fridge
+- Single bulkhead pass-through panel for cables:
+  - Mains GFCI feed for humidifier + cartridge heater (separate rated gland)
+  - Multi-pin Phoenix-style screw terminal block for sensor + load cell wires
+  - USB pass-through for IR cameras
+  - Silicone tube pass-through for pump water line
+- Touchscreen mounted on side of fridge, horizontal orientation
+- HDMI + USB-touch + DC power cables out to touchscreen
+
+### Open Questions Still to Resolve
+- Cold-mode interlock — disable cartridge heater when fridge refrigeration is on?
+- Final SSR vs relay-HAT division of labor for the new build
+- Connector spec for bulkhead pass-through (cable glands vs M16 industrial)
+- Whether to keep the factory fridge thermostat or have the Pi take over cold control
+
 ## Solaris FZ-500 physical corrections (supersede earlier notes below)
 - **Heat plate**: 175mm × 175mm (NOT ~30×30cm)
 - **Air gap** (fabric top → plate surface): **45mm** (NOT 60mm — earlier docs were wrong)
@@ -695,19 +782,94 @@ New components wiring into existing Pi + relay HAT enclosure:
 - **Pull-down resistor recommended:** 10kΩ between GPIO17 and GND to prevent floating HIGH at boot triggering SSR
 - **Andrew's preference:** Use SSR for heater control, NOT the relay HAT. Relay HAT reserved for humidifier, pump, other loads.
 
-#### Pi GPIO Allocation (Helios Pi)
+#### Pi GPIO Allocation (Helios Pi) — UPDATED 2026-05-13 (hardware I2C bus 1)
 | Pin | GPIO | Function | Status |
 |-----|------|----------|--------|
-| Pin 1 | 3.3V | Power — SHT41, SDP810, MAX31855 | Wired |
-| Pin 3 | GPIO2 (SDA) | I2C — SHT41 (0x44) + SDP810 (0x25) | **Validated** |
-| Pin 5 | GPIO3 (SCL) | I2C — SHT41 + SDP810 | **Validated** |
+| Pin 1 | 3.3V | Power — SHT41, SDP810 VDD, MAX31855 | Wired |
+| Pin 3 | GPIO2 (SDA) | **Hardware I2C bus 1 SDA** — SHT41 (0x44) + SDP810 (0x25) | **Validated 2026-05-13** |
+| Pin 5 | GPIO3 (SCL) | **Hardware I2C bus 1 SCL** — SHT41 + SDP810 | **Validated 2026-05-13** |
 | Pin 6 | GND | Common ground bus (SSR, sensors) | Wired |
+| Pin 14 | GND | SDP810 GND (red wire) | Wired |
 | Pin 7 | GPIO4 | 1-Wire — DS18B20 (needs 4.7kΩ pull-up) | Planned |
 | Pin 11 | **GPIO17** | **SSR trigger (+) for cartridge heaters** | **Validated** |
 | Pin 21 | GPIO9 (MISO) | SPI — MAX31855 DO | **Validated** |
 | Pin 23 | GPIO11 (SCLK) | SPI — MAX31855 CLK | **Validated** |
 | Pin 24 | GPIO8 (CE0) | SPI — MAX31855 CS | **Validated** |
 | Relay HAT | Channels 1-4 | Humidifier, pump, TBD (addr 0x10) | Existing |
+
+#### SDP810 Wiring — LOCKED 2026-05-13 (HARDWARE I2C BUS 1)
+**Critical lesson:** SDP810 does NOT work on software I2C (bus 15 via dtoverlay i2c-gpio) — bit-banged timing isn't tight enough. Must use hardware I2C bus 1 on the dedicated Pi pins (3 + 5).
+
+**Pin 1 of the sensor is SCL, NOT VDD.** Per Sensirion datasheet (SDP8xx-Digital v1.1, April 2019, section 4):
+
+| SDP810 Pin | Signal | Wire Color (v2, updated 2026-05-29 for 36" cable run) | Goes To |
+|------------|--------|------------|---------|
+| Pin 1 | **SCL** | yellow | Pi **Pin 5** (GPIO3, hardware SCL) |
+| Pin 2 | **VDD** | red | Pi **Pin 1** (3.3V) |
+| Pin 3 | **GND** | black | Pi **Pin 14** (GND) |
+| Pin 4 | **SDA** | blue | Pi **Pin 3** (GPIO2, hardware SDA) |
+
+*(Original v1 colors were yellow/orange/red/brown — rewired with conventional colors during wine fridge build.)*
+
+**No external pullups required** — Pi hardware I2C bus 1 has built-in 1.8kΩ pullups on GPIO2/3.
+
+**Detection quirk:** SDP810 does NOT respond to `i2cdetect` quick-write probe on some buses, but does ACK on hardware bus 1. To prove it's alive:
+
+```bash
+sudo i2cdetect -y 1                              # should show 0x25 and 0x44
+sudo i2ctransfer -y 1 w2@0x25 0x36 0x1E          # start continuous DP measurement
+sleep 1
+sudo i2ctransfer -y 1 r9@0x25                    # returns 9 bytes: DP MSB/LSB/CRC, T MSB/LSB/CRC, scale MSB/LSB/CRC
+```
+
+**Reading decode:**
+- DP raw / 60 = pressure in Pa (SDP8xx-500Pa scale factor)
+- T raw / 200 = temperature in °C
+- Scale factor = 60 (constant for -500Pa variant)
+
+**Validated 2026-05-13:** read 0xff 0xfd 0xce 0x15 0x4e 0xba 0x00 0x3c 0x39 → -0.05 Pa, 27.27 °C, scale 60. Chip is alive and accurate.
+
+**bus 15 software I2C overlay can be removed** from /boot/firmware/config.txt — no longer used.
+
+#### SHT41 #1 Wiring — LOCKED 2026-05-29 (in-column, software I2C bus 15)
+Stays on software I2C bus 15 (works fine for SHT41 — SDP810 is the picky one).
+
+| SHT41 Pad | Signal | Wire Color (v2, updated 2026-05-29) | Goes To |
+|-----------|--------|------------|---------|
+| VDD | 3.3V | red | Pi **Pin 1** (3.3V, or Pin 17 backup) |
+| GND | GND | black | Pi **Pin 6** (GND, or Pin 9 backup) |
+| SCL | clock | blue | Pi **Pin 22** (GPIO25, software I2C bus 15 SCL) |
+| SDA | data | white | Pi **Pin 15** (GPIO22, software I2C bus 15 SDA) |
+
+I2C address: 0x44 (fixed — cannot have two SHT41s on the same bus).
+
+#### SHT41 #2 — chamber RH sensor (PLANNED for Test 2 humidity PID)
+Mounts inside the wine fridge chamber for chamber-air RH/temp. Cannot share bus 15 with SHT41 #1 (same 0x44 address). Plan:
+- **Share hardware I2C bus 1 with SDP810** — no address conflict (SDP810 at 0x25, SHT41 at 0x44).
+- Wire colors TBD on install; recommend matching the SDP810 convention (red=VDD, black=GND) but using DIFFERENT colors for SDA/SCL than SDP810's blue/yellow to avoid confusion (e.g., green=SCL, white=SDA).
+- 36" cable run requires twisted-pair shielded cable + 4.7kΩ pullups at sensor end.
+
+#### MAX31855 Wiring — LOCKED 2026-05-29 (puck thermocouple, hardware SPI bus 0 CE1)
+Board sits at back panel near the Pi; only the K-type TC probe extends into the puck. No cable lengthening required.
+
+| Wire | Signal | Pi Pin | Notes |
+|------|--------|--------|-------|
+| Red | Vin (3.3V) | **Pin 17** | shared 3.3V rail with SHT41 #1 |
+| White | GND | **Pin 39** | any GND works |
+| Yellow | DO (MISO) | **Pin 21** | GPIO9, hardware SPI MISO |
+| Orange | CLK (SCLK) | **Pin 23** | GPIO11, hardware SPI SCLK |
+| Brown | CS (CE1) | **Pin 26** | GPIO7, CE1 (Pin 24/CE0 dead on this Pi) |
+
+K-type thermocouple at screw terminal:
+- **Red TC wire** → left screw (T+)
+- **Yellow TC wire** → right screw (T−)
+- IEC convention (opposite of ANSI labels). If puck temp drops instead of rises when heated, swap.
+
+#### 3.3V + GND Distribution (PLANNED, v2)
+Pi header has only 2 dedicated 3.3V pins (Pin 1 + Pin 17) — exhausted by SDP810 + MAX31855. For all new sensors (SHT41 #2, future additions), use a distribution block:
+- **3.3V bus block** — one wire from Pi Pin 17 (or Pin 1) → CESFONJER lever connector OR DIN terminal block → fan out to all sensor VDD wires
+- **GND bus block** — one wire from any Pi GND pin → distribution block → fan out to all sensor GND wires
+- Cleaner than stacking multiple wires into Pi header pins; allows hot-swap of sensors without disturbing Pi.
 
 #### Relay HAT
 - 4-channel relay DDL board (orange HUI KE relays)
@@ -770,3 +932,141 @@ New components wiring into existing Pi + relay HAT enclosure:
 | fuzefaq.com | fuzecost | Public landing page |
 | **Helios** | **helios** | **Expedry Capsule test apparatus (humidity chamber)** |
 | **Solaris** | **N/A (standalone Pi)** | **IR Heat Deflection + Sweat Egress test rig** |
+
+## Load Cell LCD/Control Enclosure — 3D Printed Clamshell (May 29, 2026)
+
+This is a purpose-built two-piece clamshell that houses the salvaged Bonvoisin LCD board + button strip + battery + RS232 + DC jack + power switch for the Helios v2 hanging load cell setup. It mounts to the new fab load cell carrier shelf (~20"L × 7"W) that slides into the wine fridge as a removable shelf.
+
+### Files (all in `/Users/a801/Desktop/helios/`)
+- `lcd_enclosure.scad` — master SCAD with `PART = "both"` for side-by-side preview
+- `lcd_enclosure_FRONT.scad` — front half only (with `PART = "front"`)
+- `lcd_enclosure_BACK.scad` — back half only (with `PART = "back"`)
+- `fuze_logo_clean.svg` — REQUIRED — clean-path FUZE logo extracted from Fuze_Logo_2019.ai. **Must live in the same directory as the .scad files** because OpenSCAD's `import()` is relative to the .scad.
+- `render_lcd_stls.sh` — bash script that invokes OpenSCAD CLI to produce both STLs
+
+### What the Enclosure Houses
+| Component | Source | Mount |
+|-----------|--------|-------|
+| Bonvoisin LCD PCB (133×41mm, 4× M3 holes at 126.5×33mm) | Salvaged from Bonvoisin scale | 4× standoff posts from inside front face, 4mm tall, with M3 heat-set inserts |
+| Button strip PCB (5 tactile keys: POW/CAL/O/T/UNIT/COU) | Salvaged from Bonvoisin scale | Slide-in side rails on back-half interior |
+| 7.4V Li-ion battery pack (19 × 17 × 80mm) | Bonvoisin internal battery | Loose in cavity bottom area |
+| KCD11 rocker switch (18.5×11.5mm panel cutout) | Bonvoisin original | Snap-in to back face |
+| 5.5/2.1mm DC barrel jack | Bonvoisin original | Ø11mm round pass-through in back face |
+| DB9 RS232 panel connector | New | Trapezoidal D-shape cutout (DIN 41652) in back face with 2× M3 mounting holes |
+
+### Locked Dimensions (CURRENT — Andrew's specs)
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| PCB_W × PCB_H | 133 × 41mm | LCD PCB |
+| PCB_MNT_DX × PCB_MNT_DY | 126.5 × 33mm | Mounting hole spacing C-to-C |
+| LCD window | 103 × 30mm | Centered laterally |
+| LCD_TOP_INSET | 5mm | from inside top to top of LCD window |
+| PCB_LCD_OFFSET | 7mm | PCB center sits 7mm BELOW LCD center (LCD is high on the PCB) |
+| Buttons | 5× at X = -59, -36.5, 0, +36.5, +59mm | Ø4.4mm actuator pass-through |
+| Button body pockets | 6.4 × 6.4 × 1.5mm | recessed INSIDE wall at each button → wall locally 1.5mm thick → 1.9mm actuator protrusion |
+| BTN_GAP_FROM_LCD | 25mm | Vertical gap between LCD bottom and button row |
+| BTN_STRIP_W × BTN_STRIP_H | 130 × 12mm | Button strip PCB |
+| Front wall WALL | 3.0mm | bulked from initial 2.5mm |
+| INTERNAL_DEPTH | **100mm** | bumped up per Andrew for battery + future hardware/sensors |
+| FRONT_HALF_DEPTH | 12mm | shallow cap |
+| BACK_HALF_DEPTH | 91mm | deep box |
+| Outer W × H | 169 × 106mm | Total external footprint per half |
+| FRONT_MARGIN_X | 15mm | lateral pad around PCB |
+| BOTTOM_PAD | 35mm | space below button row for battery bay |
+| PCB_STANDOFF_H | 4mm | LCD top FLUSH with outside of front face (3mm WALL + 4mm standoff + 7mm LCD-above-PCB = LCD at Z=0) |
+| PCB_STANDOFF_OD | 8mm | Ø |
+| Heat-set insert | Ø4.2mm × 5mm deep | for M3 brass inserts |
+| Clamshell joins | 4× corner M3 | screw from front into back half corner bosses |
+| Wall mount | None — VHB tape per Andrew 2026-05-29 | No ears/feet, smooth flat sides |
+
+### Back-Face Cutouts
+- **DB9 RS232** (upper center): proper trapezoidal D-shape per DIN 41652 — 25.40mm bottom × 19.05mm top × 12.55mm tall + 2× Ø3.2mm M3 mounting holes at ±12.50mm
+- **DC barrel jack** (lower left): Ø11mm round pass-through (wires pre-soldered, jack body held by friction/epoxy — Andrew's call: "we can just run it in a circular hole though")
+- **KCD11 rocker switch** (lower right): 18.5mm tall × 11.5mm wide snap-in cutout
+
+### FUZE Logo (front face, debossed)
+- Imported from `fuze_logo_clean.svg` — clean SVG extracted from Fuze_Logo_2019.ai by stripping the gradients and clipPaths (kept only the artwork paths)
+- 1mm debossed into outside of front face
+- Symbol center dot positioned EXACTLY on the center button (KEY3 / O/T, at X=0, Y=BTN_CY)
+- Mirrored in X so it reads correctly when viewed from outside (compensates for SCAD orientation)
+- Default scale 0.35 → symbol ~12mm, full logo ~62mm wide
+- Optional sacrificial bridge floor inside the deboss (`FUZE_DEBOSS_SUPPORT = true`) — 0.4mm thick at 0.4mm above outer face, helps PC bridge cleanly
+- **Embossed/raised mode REJECTED** because that would require supporting the entire front face during print (the whole face would float 1mm above the bed on tiny logo features). Deboss only.
+
+### Print Orientation
+- **FRONT half**: print open side DOWN on bed (LCD window face UP), Bambu H2D, PolyMax PC Tough Blue, 0.2mm layers, 3 perimeters, 25% infill, 12mm brim, 8mm join lip prints last
+- **BACK half**: print open side UP on bed (back wall on bed), same settings, 12mm brim around the ~169×106mm footprint. ~91mm tall — long print (~8–12 hours)
+
+### Print Settings That Matter (PC Tough on Bambu H2D — May 29 2026 lesson learned)
+The first PC print of the back half failed due to bed adhesion (corner lift → blobby mess). Settings for a successful PC print:
+- **Bed: 105–110°C** (NOT 100°C — Polymaker datasheet 100–110 means run 108)
+- **Nozzle: 270°C**
+- **Magigoo PC OR Elmer's purple glue stick on the plate** — mandatory on textured PEI
+- **Switch to Cool Plate / Smooth PEI side if available** — way better PC adhesion than textured
+- **Brim: 12mm with ≥10 perimeter loops** — structural for the print, not optional
+- **First layer speed: 15 mm/s, line width 0.5mm** — slow + fat = bonded
+- **Dry the filament 80°C × 8h before print** — wet PC bubbles, kills layer 1
+- **Chamber door + lid CLOSED**, preheat chamber 20 min before print starts — no drafts; PC contracts hard on cooldown and will lift corners on the slightest draft
+- **Layer time min 15s, fan 0% first 3 layers then 30%**
+- **Z-hop 0.4mm, avoid crossing walls ON**
+
+### Mounting (to load cell carrier shelf)
+- The enclosure mounts to the new-fab load cell shelf (~20" × 7" black-painted steel/aluminum) via **double-stick VHB tape** for now
+- Side ears + bottom feet options exist in the SCAD (`MOUNT_STYLE = "side_ears" | "bottom_feet" | "none"`) — currently set to `"none"` for clean flat sides
+- The load cell carrier shelf is THE NEW FAB — NOT the original Bonvoisin shell. Only the bare strain-gauge beam was salvaged from the Bonvoisin.
+
+### Internal Layout (with 100mm depth)
+- Front face: LCD PCB pressed against standoffs (LCD module flush with front face)
+- Button strip: in side rails near front, actuators poking through button holes
+- Battery (19 × 17 × 80mm): rests in bottom area of cavity (laterally along the 145mm width)
+- RS232 driver board (e.g. MAX3232 module): plenty of room behind LCD PCB
+- Lots of headroom for future sensors / additional boards / wiring harness
+
+### Things I Got Wrong During Development (so the next session knows)
+1. Originally put PCB standoffs on the BACK wall 100mm from the LCD. Bug — fixed by moving them to inside of FRONT face.
+2. Originally had `PART = "both"` stacking halves in Z (looked like one block). Fixed to lay them side-by-side on the build plate.
+3. Originally used wrong DB9 cutout dimensions (30.81mm connector body width instead of 25.40mm panel cutout width) — M3 mounting holes fell INSIDE the trapezoid and disappeared. Fixed.
+4. Originally assumed LCD was centered on PCB. Wrong — LCD is high on the PCB, top mount hole is only 4mm from PCB top. Added `PCB_LCD_OFFSET = 7.0` to push PCB down so standoffs don't clip the wall.
+5. First attempt at FUZE logo was a primitive 6-spoke reconstruction. Andrew correctly called it garbage — switched to importing the real SVG paths from the .ai file.
+6. Initially had the back-stop bar across the button strip — removed per Andrew, the side rails grip the strip fine.
+7. Initially gave PCB standoffs on the back floor — they got carved away by the hollow operation. Fixed by moving them outside the difference() block.
+
+### Open Items For The Next Session
+- **First good back-half print** — apply the PC adhesion fixes above and retry
+- **Heat-set insert installation** — need 4× M3 inserts for clamshell screws + 4× M3 inserts for LCD PCB standoffs. Use a soldering iron at 220-240°C
+- **Verify button protrusion** — actuator should poke ~1.9mm out of the front face. If too tight, deepen `BTN_BODY_POCKET_D` from 1.5 to 2.0mm
+- **Optional: source the DB9 chassis-mount jack** — confirm pin 2/3/5 (TX/RX/GND) wiring matches what the Bonvoisin RS232 expects
+- **VHB mount the printed enclosure** to the load cell carrier shelf when ready
+- **Update the bigger Helios v2 plan** with the enclosure now done (Task #51: Mount load cell beam + capsule hanging hook; Task #52: full v2 integration test)
+
+## LCD Enclosure — CORRECTED LOCKED VALUES (Helios 5 session, May 30 2026) — SUPERSEDES ALL ABOVE
+The first PC print exposed several errors that all traced back to stale notes. These are the verified, caliper-confirmed values. Files: `lcd_enclosure_FRONT.scad`, `lcd_enclosure_BACK.scad`, master `lcd_enclosure.scad` — all three carry identical values.
+
+### Face size — FRONT MUST MATCH ALREADY-PRINTED BACK BOX
+- **OUTER FACE = 169.0 W × 105.4 H mm** (both halves). Width 169 is correct/perfect — DO NOT change.
+- Height 105.4 comes from **`BOTTOM_PAD = 35.0`** (NOT 50). The front had been bloated to 120.4mm because BOTTOM_PAD got bumped 35→50 "for logo headroom." That 15mm is what made the front taller than the back box. Reverted to 35.
+- Depths unchanged: `FRONT_HALF_DEPTH = 12`, `BACK_HALF_DEPTH = 91`, `INTERNAL_DEPTH = 100`. The back box (6-hr print) is KEPT as-is; only the front (1-hr) gets reprinted to match.
+
+### LCD window — datumed to PCB center
+- LCD glass **102 × 30 mm**, **centered on the PCB** (5.5mm margin top AND bottom: 5.5+30+5.5 = 41mm PCB height). The old "LCD is high on the PCB, 7mm offset" assumption was WRONG.
+- PCB: **41 mm tall × 132.65 mm wide** (kept `PCB_W = 133` in SCAD so OUTER_W stays 169; the 0.35mm is absorbed by side margin). Mounting holes 126.5 × 33 c-c.
+- Window now tracks PCB center: `LCD_CY = y_from_center(PCB_CY_FROM_TOP)`. `PCB_LCD_OFFSET = 7.0` now just drops the PCB to 27mm-from-top for 6.5mm top-edge clearance (NOT a glass offset). Glass assumed horizontally centered on PCB (Andrew confirmed).
+- `LCD_W = 102` (was 103), `LCD_H = 30`.
+
+### Buttons — caliper-confirmed center-to-center
+- **`BTN_X = [-59, -37, 0, 37, 59]`** (center-to-center from the center button; measured directly). Old ±36.5/±59 were ~0.5mm off.
+- Button row **Y = -12.5** (driven by the 105.4 face) — this matches the back box's button-strip rails, which were printed in the BOTTOM_PAD=35 era. The buttons looked "off" mostly because the row dropped 7.5mm when the height was corrected.
+- **`BTN_HOLE_CUT_D = 5.4`** — actual actuator hole Ø (+1mm over the 4.0mm post = 0.70mm clearance/side, for assembly variance). NOTE: `BTN_HOLE_D = 4.4` is kept ONLY for the height/button-Y layout math — do NOT route the cut through BTN_HOLE_D or you'll change OUTER_H and BTN_CY. The cut uses BTN_HOLE_CUT_D.
+- Body pockets still `BTN_BODY_POCKET_SQ = 6.4` — bump if the 6mm bodies bind.
+
+### DB9 (RS232) — real NorComp DE-9 panel spec
+- Old file had a 1"-wide cutout with screws at 25mm → screws punched into the opening. CORRECTED to NorComp DE-9: cutout **15.90 wide / 13.47 narrow / 12.50 tall**, mounting screws **24.99 c-c**, Ø3.2. Gives 2.94mm of solid between hole and cutout.
+- **DB9 + DC jack + rocker switch live on the BACK half.** The back box in hand still has the OLD oversized DB9 — this fix only helps a future back reprint. Hand-fix the existing back if needed.
+
+### FUZE logo — regenerated + inlay
+- Old `fuze_logo_h.scad` was a garbage trace (lost the 6 dots). REGENERATED from `FUZE Logo Horizontal (2).ai` (it's a PDF) via `pdftocairo` → raster → `cv2` contour trace. 13 contours (4 letters + connected symbol body + 6 dots + ™), center-anchored at native bbox center **(27.6948, 8.5813)** so `FUZE_LOGO_X=0` truly centers it.
+- Logo deboss now **`FUZE_LOGO_SCALE = 1.9`** (≈102 × 30mm), **`FUZE_LOGO_Y = -32.7`** — shrunk from 2.4× because 2.4× (38mm tall) does not fit the shorter 105.4 face. `FUZE_DEBOSS_SUPPORT = false`.
+- **STALE: `FUZE_logo_inlay_white_TPU.stl` was generated at 2.4× (129mm) and NO LONGER matches the 1.9× deboss.** Must regenerate the white TPU inlay at 1.9× before printing it. 11 pieces, 1.0mm thick, 0.125mm clearance, ™ dropped.
+
+### Print note
+Reprint ONLY the front from `lcd_enclosure_FRONT.scad` (open-side-down, LCD face up). It mates with the existing back box.
