@@ -811,6 +811,15 @@ New components wiring into existing Pi + relay HAT enclosure:
 
 *(Original v1 colors were yellow/orange/red/brown — rewired with conventional colors during wine fridge build.)*
 
+> ⚠️ **HARDWARE GOTCHA — THIS SDP810's CABLE HAS RED/BLACK SWAPPED (2026-05-31).**
+> An intern wired the plug going into the 810 with power and ground inverted. On THIS unit the
+> **BLACK wire = power (3.3V → Pin 1)** and the **RED wire = ground (→ Pin 14)** — the opposite of the
+> table above and of all convention. It is working correctly this way (validated: 0x25 ACKs, reads
+> −0.02 Pa / 23.8 °C). **DO NOT "fix" the colors to match convention** — wiring red→3.3V on this cable
+> applies reverse polarity to the sensor and shorts the Pi's 3.3V rail (this already happened once and
+> browned out the Pi 5; it survived). Either relabel/remake the cable with correct colors, or leave it
+> and remember: on this 810, black=3.3V, red=GND.
+
 **No external pullups required** — Pi hardware I2C bus 1 has built-in 1.8kΩ pullups on GPIO2/3.
 
 **Detection quirk:** SDP810 does NOT respond to `i2cdetect` quick-write probe on some buses, but does ACK on hardware bus 1. To prove it's alive:
@@ -1070,3 +1079,75 @@ The first PC print exposed several errors that all traced back to stale notes. T
 
 ### Print note
 Reprint ONLY the front from `lcd_enclosure_FRONT.scad` (open-side-down, LCD face up). It mates with the existing back box.
+
+## Bonvoisin Scale RS232 / DB9 wiring — VALIDATED 2026-05-31 (post-rebuild)
+The scale streams continuously at **9600 8N1**, ~10 readings/sec, format `  -0.008\n\r`
+(space-padded grams, LF then CR). No print button, no start command — it just streams.
+
+**DB9 pinout on the scale's MALE connector (the 3 resoldered wires):**
+- Board **G** (GND) → DB9 **pin 5**
+- Board **T** (TX)  → DB9 **pin 2**   ← TX on pin 2, NOT pin 3 (straight FTDI cable: pin 2 = adapter's RX)
+- Board **R** (RX)  → DB9 **pin 3**
+
+The rebuild first put TX on pin 3 (wrong for this straight FTDI cable) → zero bytes for hours.
+Swapping the two data wires to TX→2 / RX→3 fixed it instantly. Cable = the original known-good
+FTDI USB→RS232 (female DB9, /dev/ttyUSB0). A male-to-male cable will NOT mate — scale output is male.
+
+**Controller scale reader (helios_control.py):** self-healing — the reader thread opens the port
+itself and retries every 2s, so it survives the port being busy at boot or the scale replugged.
+Don't gate the thread on the initial open succeeding.
+
+## Helios v2 Pi REBUILD + controller status — 2026-05-31
+Old Helios Pi SD card broke (dropped). Rebuilt on a **Raspberry Pi 5** (hostname `Helios`,
+user `helios` / pw `1234`), Raspberry Pi OS Bookworm 64-bit Desktop, touchscreen kiosk.
+
+### THE BIG LESSON — Pi 5 + RPi.GPIO + silent MOCK mode
+- `helios_control.py` wraps its hardware imports in try/except → sets **`MOCK = True`** if ANY of
+  `smbus2 / RPi.GPIO / spidev / pymodbus / serial` fail to import. In MOCK mode it returns **canned
+  fake numbers** (puck 77°F, chamber 73.4°F, column 104°F/80%, scale 0/disconnected) and the
+  service runs happily — looks alive but reads nothing real. **If readings look like those exact
+  values, you're in MOCK mode.**
+- Root cause on the Pi 5: legacy **`RPi.GPIO` does not work on Pi 5** (`RuntimeError: Cannot determine
+  SOC peripheral base address`). The drop-in fix is **`rpi-lgpio`** — but `pip install rpi-lgpio`
+  builds `lgpio` from source and needs **`swig` + `python3-dev`** or it fails silently, leaving NO
+  `RPi` module → MOCK. Fix sequence:
+  ```
+  sudo apt install -y swig python3-dev python3-lgpio liblgpio-dev
+  ~/helios-env/bin/pip install rpi-lgpio
+  ~/helios-env/bin/python3 -c "import RPi.GPIO; print('RPi OK')"
+  ```
+- `setup_helios_pi.sh` now installs `rpi-lgpio` (not RPi.GPIO) + the build deps, and the kiosk
+  launches Chromium with `--touch-events=enabled` for finger scrolling.
+
+### Self-test
+`helios_selftest.py` (scp to Pi, run `~/helios-env/bin/python3 ~/helios_selftest.py`) checks all 8
+subsystems (5 imports + both SHT41s + SDP810 + MAX31855 + scale + GPIO + Modbus) with PASS/FAIL.
+Imports failing = MOCK mode = fix those first.
+
+### Controller (helios_control.py) — current
+- **Humidifier moved to GPIO6 / SSR-25DA → MIFASOL boiler** (dashboard card "Chamber Humidifier").
+  The old sonic/Modbus-CH6 humidifier is retired. Pump (CH2) + Fan (CH4) still on the Waveshare relay.
+- **Heater SSR-10 DD on GPIO5 / Pin 29** (NOT GPIO17 — that note was stale; GPIO27→GPIO23→GPIO5).
+- **SHT41 #2 (in-column, bus 1, 0x44)** now read + logged + charted alongside SHT41 #1 (chamber, bus 15).
+- **Humidity PID**: dashboard "Target Chamber RH" slider + Auto toggle → slow-PWM the boiler (20s
+  window, KP=4/KI=0.08), feedback = chamber SHT41 #1. Tune KP/KI after watching it.
+- **Scale reader self-healing** (see section above). Scale on /dev/ttyUSB0, DB9 TX→pin2.
+- **Per-sensor calibration offsets** (`PUCK_T_OFFSET_F`, `CHAMBER_T_OFFSET_F`, `CHAMBER_RH_OFFSET`,
+  `COLUMN_T_OFFSET_F`, `COLUMN_RH_OFFSET`) — default 0. Co-locate all sensors in still air, read the
+  spread, set these so they agree.
+- **Dashboard**: near-white text, bigger fonts/sliders for the touchscreen, 2×2 chart grid plotting
+  all 7 sensor streams (temp: puck/chamber/column, RH: chamber/column, pressure, weight).
+
+### MAX31855 puck TC — "short to ground" fault (OPEN ISSUE)
+The TC is currently on top of the HEATER tape, taped over onto the aluminum → the heater's potential
+couples into the grounded TC → SCG fault. Fix: mount the TC bead to the **aluminum puck** (the mass
+we measure), NOT on the heater tape; put a thin **Kapton** layer between the bead and the aluminum
+to break the ground short (electrically isolating, still conducts heat); a dab of thermal paste/Arctic
+Alumina under the Kapton helps transfer. Route TC leads away from heater power wires. Cleanest fix =
+an **ungrounded (isolated-junction) K-type probe**, which is immune to SCG.
+
+### Open items
+- Mount/isolate the puck TC (above) to clear the SCG fault.
+- Co-location sensor calibration → set the offset constants.
+- Finish the automated test-protocol wizard (backend phase-sequencer was started, then paused).
+- Trifilar yoke + read-when-stable for the hanging capsule (SCAD done: `trifilar_yoke.scad`).

@@ -5,12 +5,13 @@ Web-based dashboard for sensor monitoring and actuator control.
 
 Access from any browser: http://<pi-ip>:5000
 
-Hardware (Updated 2026-05-02):
-  - MAX31855 (Software SPI: CLK=GPIO13, MISO=GPIO20, CS=GPIO16) → Puck thermocouple
-  - SHT41   (Software I2C bus 15: SDA=GPIO22, SCL=GPIO25)       → Chamber temp + humidity
-  - SDP810  (Software I2C bus 15: SDA=GPIO22, SCL=GPIO25)        → Differential pressure
-  - SSR-10 DD (GPIO27, pin 13)    → Cartridge heater control
-  - Waveshare Modbus RTU Relay (RS485 /dev/ttyAMA0, 9600 baud)  → Pump CH2, Fan CH4, Humidifier CH6
+Hardware (Updated 2026-05-13):
+  - MAX31855 (Hardware SPI bus 0, CE1=GPIO7=Pin 26)               → Puck thermocouple  (CE0/Pin 24 dead)
+  - SHT41   (Software I2C bus 15: SDA=GPIO22, SCL=GPIO25)         → Chamber temp + humidity
+  - SDP810  (Hardware I2C bus 1: SDA=GPIO2/Pin 3, SCL=GPIO3/Pin 5) → Differential pressure  (won't work on bus 15)
+  - SSR-10 DD (GPIO5, Pin 29)     → Cartridge heater control  (GPIO27 + GPIO23 both dead/conflicted)
+  - SSR-25 DA (GPIO6, Pin 31)     → MIFASOL boiling-pot humidifier (mains, 10k pulldown to GND)
+  - Waveshare Modbus RTU Relay (RS485 /dev/ttyAMA0, 9600 baud)  → Pump CH2, Fan CH4  (humidifier moved to SSR-25DA)
   - Bonvoisin RS232 Scale (/dev/ttyUSB0, 9600 8N1)              → Weight (g) at 1Hz
 
 Usage:
@@ -20,6 +21,7 @@ Usage:
 
 import time
 import json
+import os
 import threading
 from collections import deque
 
@@ -28,6 +30,7 @@ try:
     import smbus2
     from smbus2 import SMBus, i2c_msg
     import RPi.GPIO as GPIO
+    import spidev
     from pymodbus.client import ModbusSerialClient
     import serial
     MOCK = False
@@ -39,15 +42,35 @@ from flask import Flask, jsonify, request, Response
 
 # ── Configuration ───────────────────────────────────────────────────
 
-HEATER_PIN      = 27         # BCM GPIO27 = Pin 13 (moved from GPIO17, CAN HAT conflict)
-I2C_BUS         = 15         # Software I2C via dtoverlay i2c-gpio (GPIO22=SDA, GPIO25=SCL)
-SDP810_ADDR     = 0x25
-SHT41_ADDR      = 0x44
+HEATER_PIN      = 5          # BCM GPIO5 = Pin 29 (SSR-10 DD trigger +). Was GPIO27 (damaged), then GPIO23 (CAN HAT conflict), now GPIO5 (validated 2026-05-13).
+HUMIDIFIER_PIN  = 6          # BCM GPIO6 = Pin 31 (SSR-25DA trigger +). Switches MIFASOL boiling-pot humidifier (mains). 10k pulldown to GND. Replaces sonic/Modbus-CH6 humidifier for the big chamber.
 
-# Software SPI for MAX31855 (CAN HAT conflicts with hardware SPI)
-TC_CLK          = 13         # GPIO13 = Pin 33
-TC_MISO         = 20         # GPIO20 = Pin 38
-TC_CS           = 16         # GPIO16 = Pin 36
+# Humidity PID — closed-loop chamber RH via slow-PWM of the MIFASOL boiler SSR.
+HUM_KP          = 4.0        # %duty per %RH error
+HUM_KI          = 0.08       # integral gain (closes steady offset)
+HUM_KD          = 0.0        # derivative (start 0; add if it overshoots)
+HUM_PWM_WINDOW  = 20.0       # seconds per boiler on/off cycle (boiler has thermal lag)
+HUM_DEADBAND    = 1.0        # %RH; inside this band, hold
+
+# Per-sensor calibration offsets (ADDED to each reading). Co-locate all sensors
+# in still air, note each one's spread vs a chosen reference, and set these so
+# they agree. Leave at 0.0 until you've done a co-location reading.
+PUCK_T_OFFSET_F    = 0.0
+CHAMBER_T_OFFSET_F = 0.0
+CHAMBER_RH_OFFSET  = 0.0
+COLUMN_T_OFFSET_F  = 0.0
+COLUMN_RH_OFFSET   = 0.0
+SHT41_BUS       = 15         # Software I2C via dtoverlay i2c-gpio (GPIO22=SDA, GPIO25=SCL) — SHT41 works fine here
+SDP810_BUS      = 1          # Hardware I2C bus 1 (GPIO2/Pin3 = SDA, GPIO3/Pin5 = SCL) — SDP810 won't ACK on software bus 15
+SDP810_ADDR     = 0x25
+SHT41_ADDR      = 0x44       # SHT41 #1 (bus 15) = EXTERNAL chamber temp/RH
+SHT41_COL_BUS   = 1          # SHT41 #2 shares hardware I2C bus 1 with the SDP810
+SHT41_COL_ADDR  = 0x44       # SHT41 #2 (bus 1) = IN-COLUMN temp/RH (inside aluminum column, by the heating puck)
+
+# Hardware SPI for MAX31855 (validated 2026-05-13: CE0/Pin 24 dead, using CE1/Pin 26)
+SPI_BUS         = 0
+SPI_DEVICE      = 1          # CE1 = Pin 26 (GPIO7). CE0/Pin 24 damaged on this Pi.
+SPI_SPEED_HZ    = 500000     # Conservative; chip max is 5 MHz but 500 kHz is rock-solid
 
 # Waveshare Modbus RTU Relay (RS485 via CAN HAT)
 MODBUS_PORT     = '/dev/ttyAMA0'
@@ -55,7 +78,7 @@ MODBUS_BAUD     = 9600
 MODBUS_ID       = 1
 RELAY_PUMP      = 1          # Coil address 1 = CH2
 RELAY_FAN       = 3          # Coil address 3 = CH4
-RELAY_HUMID     = 5          # Coil address 5 = CH6
+RELAY_HUMID     = 5          # Coil address 5 = CH6 (DEPRECATED — humidifier moved to SSR-25DA on GPIO6; kept for reference)
 
 # Bonvoisin RS232 Scale
 SCALE_PORT      = '/dev/ttyUSB0'
@@ -69,7 +92,9 @@ HISTORY_SECONDS = 600        # 10 min rolling buffer
 state = {
     'puck_f': 0.0, 'puck_c': 0.0,
     'chamber_f': 0.0, 'chamber_c': 0.0,
-    'humidity': 0.0,
+    'humidity': 0.0,          # external chamber RH (SHT41 #1, bus 15)
+    'column_c': 0.0, 'column_f': 0.0,
+    'column_humidity': 0.0,   # in-column RH (SHT41 #2, bus 1)
     'pressure_pa': 0.0,
     'heater': False,
     'pump': False,
@@ -78,6 +103,8 @@ state = {
     'fan': False,
     'humidifier': False,
     'target_f': 300.0,
+    'target_rh': 50.0,
+    'humidity_auto': False,
     'weight_g': 0.0,
     'weight_stable': False,
     'scale_connected': False,
@@ -117,18 +144,22 @@ class Hardware:
     def __init__(self):
         if MOCK:
             return
-        # I2C bus (software bit-banged on GPIO22/25)
-        self.bus = SMBus(I2C_BUS)
+        # I2C — SHT41 on software bus 15, SDP810 on hardware bus 1
+        self.bus_sht41 = SMBus(SHT41_BUS)
+        self.bus_sdp810 = SMBus(SDP810_BUS)
 
-        # Software SPI for MAX31855
+        # Hardware SPI for MAX31855 (CE1/Pin 26; CE0/Pin 24 damaged)
+        self.spi = spidev.SpiDev()
+        self.spi.open(SPI_BUS, SPI_DEVICE)
+        self.spi.max_speed_hz = SPI_SPEED_HZ
+        self.spi.mode = 0
+
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup(TC_CLK, GPIO.OUT, initial=GPIO.LOW)
-        GPIO.setup(TC_CS, GPIO.OUT, initial=GPIO.HIGH)
-        GPIO.setup(TC_MISO, GPIO.IN)
 
-        # Heater SSR
+        # Heater SSR (SSR-10 DD) + Humidifier SSR (SSR-25DA → MIFASOL)
         GPIO.setup(HEATER_PIN, GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(HUMIDIFIER_PIN, GPIO.OUT, initial=GPIO.LOW)
 
         # Modbus relay client
         self.modbus = ModbusSerialClient(
@@ -140,21 +171,22 @@ class Hardware:
         )
         self.modbus.connect()
 
-        # Init SDP810 continuous mode
+        # Init SDP810 continuous mode — Differential pressure, average till read (0x3615)
         try:
-            self.bus.write_i2c_block_data(SDP810_ADDR, 0x36, [0x15])
+            msg = i2c_msg.write(SDP810_ADDR, [0x36, 0x15])
+            self.bus_sdp810.i2c_rdwr(msg)
             time.sleep(0.1)
-        except:
-            pass
+        except Exception as e:
+            print(f"SDP810 init failed: {e}")
         # Soft-reset SHT41
         try:
-            self.bus.write_byte(SHT41_ADDR, 0x94)
+            self.bus_sht41.write_byte(SHT41_ADDR, 0x94)
             time.sleep(0.01)
         except:
             pass
 
-        # Ensure all relays off at startup
-        for coil in [RELAY_PUMP, RELAY_FAN, RELAY_HUMID]:
+        # Ensure all relays off at startup (humidifier is now a GPIO SSR, not a relay)
+        for coil in [RELAY_PUMP, RELAY_FAN]:
             try:
                 self.modbus.write_coil(coil, False, device_id=MODBUS_ID)
             except:
@@ -166,37 +198,22 @@ class Hardware:
         self._last_weight = 0.0
         self._weight_stable = False
         self._scale_connected = False
-        try:
-            self.scale_ser = serial.Serial(
-                SCALE_PORT, SCALE_BAUD,
-                bytesize=8, parity='N', stopbits=1,
-                timeout=2
-            )
-            self._scale_connected = True
-            # Start background reader thread
-            self._scale_thread = threading.Thread(target=self._scale_reader, daemon=True)
-            self._scale_thread.start()
-        except Exception as e:
-            print(f"Scale not found on {SCALE_PORT}: {e}")
+        # The reader thread opens the port itself and self-heals — handles the
+        # port being briefly busy at startup, or the scale unplugged/replugged.
+        self._scale_thread = threading.Thread(target=self._scale_reader, daemon=True)
+        self._scale_thread.start()
 
-    # ── MAX31855 (Software SPI) ────────────────────────────────────
+    # ── MAX31855 (Hardware SPI, CE1/Pin 26) ────────────────────────
     def read_thermocouple(self):
         if MOCK:
             return 25.0, 77.0
-        GPIO.output(TC_CS, GPIO.LOW)
-        time.sleep(0.001)
-        val = 0
-        for i in range(32):
-            GPIO.output(TC_CLK, GPIO.HIGH)
-            time.sleep(0.0001)
-            bit = GPIO.input(TC_MISO)
-            val = (val << 1) | bit
-            GPIO.output(TC_CLK, GPIO.LOW)
-            time.sleep(0.0001)
-        GPIO.output(TC_CS, GPIO.HIGH)
+        raw = self.spi.xfer2([0, 0, 0, 0])
+        val = (raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3]
 
         if val == 0:
             raise RuntimeError("MAX31855: all zeros — check wiring")
+        if val == 0xFFFFFFFF:
+            raise RuntimeError("MAX31855: all ones — CS not pulsing or chip dead")
         if val & 0x10000:
             faults = val & 0x07
             msgs = []
@@ -210,14 +227,14 @@ class Hardware:
         c = tc * 0.25
         return c, c * 9 / 5 + 32
 
-    # ── SHT41 (I2C) ────────────────────────────────────────────────
+    # ── SHT41 #1 (I2C bus 15) — EXTERNAL chamber temp/RH ───────────
     def read_sht41(self):
         if MOCK:
             return 23.0, 73.4, 35.0
-        self.bus.write_byte(SHT41_ADDR, 0xFD)
+        self.bus_sht41.write_byte(SHT41_ADDR, 0xFD)
         time.sleep(0.03)
         msg = i2c_msg.read(SHT41_ADDR, 6)
-        self.bus.i2c_rdwr(msg)
+        self.bus_sht41.i2c_rdwr(msg)
         d = list(msg)
         t = (d[0] << 8) | d[1]
         h = (d[3] << 8) | d[4]
@@ -225,18 +242,47 @@ class Hardware:
         rh = max(0, min(100, -6.0 + 125.0 * (h / 65535.0)))
         return c, c * 9 / 5 + 32, rh
 
-    # ── SDP810 (I2C) ───────────────────────────────────────────────
+    # ── SHT41 #2 (I2C bus 1, shared w/ SDP810) — IN-COLUMN temp/RH ──
+    def read_sht41_column(self):
+        if MOCK:
+            return 40.0, 104.0, 80.0
+        self.bus_sdp810.write_byte(SHT41_COL_ADDR, 0xFD)
+        time.sleep(0.03)
+        msg = i2c_msg.read(SHT41_COL_ADDR, 6)
+        self.bus_sdp810.i2c_rdwr(msg)
+        d = list(msg)
+        t = (d[0] << 8) | d[1]
+        h = (d[3] << 8) | d[4]
+        c = -45.0 + 175.0 * (t / 65535.0)
+        rh = max(0, min(100, -6.0 + 125.0 * (h / 65535.0)))
+        return c, c * 9 / 5 + 32, rh
+
+    # ── SDP810 (I2C bus 1, hardware) ───────────────────────────────
     def read_pressure(self):
         if MOCK:
             return 0.0
-        data = self.bus.read_i2c_block_data(SDP810_ADDR, 0x00, 9)
-        dp = (data[0] << 8) | data[1]
-        if dp > 32767:
-            dp -= 65536
-        scale = (data[6] << 8) | data[7]
-        if scale == 0:
-            scale = 60
-        return dp / scale
+        # Read 9 bytes — SDP810 streams continuous result after the init command.
+        try:
+            msg = i2c_msg.read(SDP810_ADDR, 9)
+            self.bus_sdp810.i2c_rdwr(msg)
+            data = list(msg)
+            dp = (data[0] << 8) | data[1]
+            if dp > 32767:
+                dp -= 65536
+            scale = (data[6] << 8) | data[7]
+            if scale == 0:
+                scale = 60
+            self._last_pa = dp / scale
+            return self._last_pa
+        except Exception:
+            # A glitch (usually boiler-SSR switching noise) knocked it out of
+            # continuous mode — re-arm the measurement so the next read recovers,
+            # and hold the last good value instead of erroring.
+            try:
+                self.bus_sdp810.i2c_rdwr(i2c_msg.write(SDP810_ADDR, [0x36, 0x15]))
+            except Exception:
+                pass
+            return getattr(self, '_last_pa', 0.0)
 
     # ── Heater (GPIO → SSR) ────────────────────────────────────────
     def set_heater(self, on):
@@ -262,14 +308,11 @@ class Hardware:
         except Exception as e:
             print(f"Fan relay error: {e}")
 
-    # ── Humidifier (Modbus relay CH6) ──────────────────────────────
+    # ── Humidifier (GPIO → SSR-25DA → MIFASOL boiling-pot, mains) ───
     def set_humidifier(self, on):
         if MOCK:
             return
-        try:
-            self.modbus.write_coil(RELAY_HUMID, on, device_id=MODBUS_ID)
-        except Exception as e:
-            print(f"Humidifier relay error: {e}")
+        GPIO.output(HUMIDIFIER_PIN, GPIO.HIGH if on else GPIO.LOW)
 
     # ── Scale (RS232) ─────────────────────────────────────────────────
     def _scale_reader(self):
@@ -277,9 +320,12 @@ class Hardware:
         buf = b''
         while True:
             try:
-                if not self.scale_ser or not self.scale_ser.is_open:
-                    time.sleep(1)
-                    continue
+                if self.scale_ser is None or not self.scale_ser.is_open:
+                    self.scale_ser = serial.Serial(
+                        SCALE_PORT, SCALE_BAUD,
+                        bytesize=8, parity='N', stopbits=1, timeout=2
+                    )
+                    self._scale_connected = True
                 data = self.scale_ser.read(64)
                 if not data:
                     continue
@@ -302,21 +348,15 @@ class Hardware:
                             buf = buf[1:]
                         continue
                     self._parse_scale_line(line.decode('ascii', errors='ignore').strip())
-            except Exception as e:
+            except Exception:
                 self._scale_connected = False
-                time.sleep(2)
-                # Try to reconnect
                 try:
                     if self.scale_ser:
                         self.scale_ser.close()
-                    self.scale_ser = serial.Serial(
-                        SCALE_PORT, SCALE_BAUD,
-                        bytesize=8, parity='N', stopbits=1,
-                        timeout=2
-                    )
-                    self._scale_connected = True
-                except:
+                except Exception:
                     pass
+                self.scale_ser = None
+                time.sleep(2)
 
     def _parse_scale_line(self, line):
         """Parse a weight reading line from the Bonvoisin scale.
@@ -367,7 +407,8 @@ class Hardware:
         if MOCK:
             return
         GPIO.output(HEATER_PIN, GPIO.LOW)
-        for coil in [RELAY_PUMP, RELAY_FAN, RELAY_HUMID]:
+        GPIO.output(HUMIDIFIER_PIN, GPIO.LOW)
+        for coil in [RELAY_PUMP, RELAY_FAN]:
             try:
                 self.modbus.write_coil(coil, False, device_id=MODBUS_ID)
             except:
@@ -389,6 +430,7 @@ def sensor_loop():
         errors = []
         try:
             c, f = hw.read_thermocouple()
+            f += PUCK_T_OFFSET_F; c = (f - 32) * 5 / 9
             state['puck_c'] = round(c, 1)
             state['puck_f'] = round(f, 1)
         except Exception as e:
@@ -396,11 +438,21 @@ def sensor_loop():
 
         try:
             c, f, rh = hw.read_sht41()
+            f += CHAMBER_T_OFFSET_F; c = (f - 32) * 5 / 9; rh += CHAMBER_RH_OFFSET
             state['chamber_c'] = round(c, 1)
             state['chamber_f'] = round(f, 1)
             state['humidity'] = round(rh, 1)
         except Exception as e:
-            errors.append(f"SHT41: {e}")
+            errors.append(f"SHT41-chamber: {e}")
+
+        try:
+            cc, cf, crh = hw.read_sht41_column()
+            cf += COLUMN_T_OFFSET_F; cc = (cf - 32) * 5 / 9; crh += COLUMN_RH_OFFSET
+            state['column_c'] = round(cc, 1)
+            state['column_f'] = round(cf, 1)
+            state['column_humidity'] = round(crh, 1)
+        except Exception as e:
+            errors.append(f"SHT41-column: {e}")
 
         try:
             pa = hw.read_pressure()
@@ -425,6 +477,8 @@ def sensor_loop():
                 'puck': state['puck_f'],
                 'chamber': state['chamber_f'],
                 'rh': state['humidity'],
+                'col_f': state['column_f'],
+                'col_rh': state['column_humidity'],
                 'pa': state['pressure_pa'],
                 'wt': state['weight_g'],
             })
@@ -446,7 +500,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <style>
   :root {
     --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
-    --text: #e4e4e7; --dim: #71717a; --accent: #f59e0b;
+    --text: #e4e4e7; --dim: #d1d5db; --accent: #f59e0b;
     --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -454,6 +508,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-family: -apple-system, 'Segoe UI', Roboto, monospace;
     background: var(--bg); color: var(--text);
     min-height: 100vh;
+    touch-action: pan-y; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;
   }
   header {
     background: linear-gradient(135deg, #1a1d27 0%, #252836 100%);
@@ -466,7 +521,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     color: var(--accent);
   }
   header .status {
-    font-size: 12px; color: var(--dim);
+    font-size: 15px; color: var(--dim);
   }
   header .status .dot {
     display: inline-block; width:8px; height:8px; border-radius:50%;
@@ -482,7 +537,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     border-radius: 12px; padding: 20px;
   }
   .card .label {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px;
+    font-size: 14px; text-transform: uppercase; letter-spacing: 1.5px;
     color: var(--dim); margin-bottom: 8px;
   }
   .card .value {
@@ -490,10 +545,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     line-height: 1.1;
   }
   .card .unit {
-    font-size: 16px; font-weight: 400; color: var(--dim); margin-left: 4px;
+    font-size: 18px; font-weight: 400; color: var(--dim); margin-left: 4px;
   }
   .card .sub {
-    font-size: 13px; color: var(--dim); margin-top: 6px;
+    font-size: 15px; color: var(--dim); margin-top: 6px;
   }
   .card.puck .value { color: var(--accent); }
   .card.chamber .value { color: var(--blue); }
@@ -521,10 +576,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: flex; justify-content: space-between; align-items: center;
   }
   .ctrl-card .info h3 {
-    font-size: 14px; font-weight: 600; margin-bottom: 4px;
+    font-size: 17px; font-weight: 600; margin-bottom: 4px;
   }
   .ctrl-card .info p {
-    font-size: 12px; color: var(--dim);
+    font-size: 15px; color: var(--dim);
   }
   .toggle {
     position: relative; width: 56px; height: 30px; cursor: pointer;
@@ -573,7 +628,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     font-size: 13px; font-weight: 600; white-space: nowrap;
   }
   .target-card input[type=range] {
-    flex: 1; min-width: 200px; accent-color: var(--accent);
+    -webkit-appearance: none; appearance: none;
+    flex: 1; min-width: 220px; height: 22px; border-radius: 11px;
+    background: #2a2d3a; outline: none; cursor: pointer;
+  }
+  .target-card input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 46px; height: 46px; border-radius: 50%;
+    background: var(--accent); border: 3px solid #fff; cursor: pointer;
+  }
+  .target-card input[type=range]::-moz-range-thumb {
+    width: 46px; height: 46px; border-radius: 50%;
+    background: var(--accent); border: 3px solid #fff; cursor: pointer;
   }
   .target-card .target-val {
     font-size: 24px; font-weight: 700; color: var(--accent);
@@ -582,14 +648,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   .chart-section {
     padding: 0 24px 24px;
-    display: flex; flex-direction: column; gap: 16px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px;
   }
   .chart-card {
     background: var(--card); border: 1px solid var(--border);
     border-radius: 12px; padding: 16px 20px;
   }
   .chart-card h3 {
-    font-size: 13px; font-weight: 600; color: var(--dim);
+    font-size: 16px; font-weight: 600; color: var(--dim);
     text-transform: uppercase; letter-spacing: 1px;
     margin-bottom: 8px;
   }
@@ -629,9 +695,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="sub"><span id="chamberC">--</span>&deg;C &bull; SHT41</div>
   </div>
   <div class="card humidity">
-    <div class="label">Relative Humidity</div>
+    <div class="label">Chamber RH (external)</div>
     <div class="value"><span id="rh">--</span><span class="unit">%</span></div>
-    <div class="sub">SHT41</div>
+    <div class="sub">SHT41 #1 &bull; bus 15</div>
+  </div>
+  <div class="card chamber">
+    <div class="label">Column Temp (in-tube)</div>
+    <div class="value"><span id="colF">--</span><span class="unit">&deg;F</span></div>
+    <div class="sub"><span id="colC">--</span>&deg;C &bull; SHT41 #2</div>
+  </div>
+  <div class="card humidity">
+    <div class="label">Column RH (in-tube)</div>
+    <div class="value"><span id="colRh">--</span><span class="unit">%</span></div>
+    <div class="sub">SHT41 #2 &bull; bus 1</div>
   </div>
   <div class="card pressure">
     <div class="label">Differential Pressure</div>
@@ -652,7 +728,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="ctrl-card">
     <div class="info">
       <h3>Cartridge Heater</h3>
-      <p>GPIO27 &rarr; SSR-10 DD &rarr; 12V 40W&times;2</p>
+      <p>GPIO5 &rarr; SSR-10 DD &rarr; 12V 40W&times;2</p>
     </div>
     <label class="toggle heater">
       <input type="checkbox" id="heaterToggle" onchange="toggleActuator('heater', this.checked)">
@@ -692,8 +768,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="ctrl-card">
     <div class="info">
-      <h3>Sonic Humidifier</h3>
-      <p>Modbus CH6</p>
+      <h3>Chamber Humidifier</h3>
+      <p>GPIO6 &rarr; SSR-25DA &rarr; MIFASOL boiler</p>
     </div>
     <label class="toggle">
       <input type="checkbox" id="humidifierToggle" onchange="toggleActuator('humidifier', this.checked)">
@@ -708,6 +784,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <input type="range" id="targetSlider" min="100" max="500" value="300"
            oninput="updateTarget(this.value)">
     <div class="target-val"><span id="targetVal">300</span>&deg;F</div>
+  </div>
+  <div class="target-card">
+    <label>Target Chamber RH (PID)</label>
+    <input type="range" id="rhSlider" min="0" max="95" value="50"
+           oninput="updateHumidityTarget(this.value)">
+    <div class="target-val"><span id="rhTargetVal">50</span>%</div>
+    <label style="display:block;margin-top:8px;font-size:13px;font-weight:400">
+      <input type="checkbox" id="humAutoToggle" onchange="toggleHumidityAuto(this.checked)">
+      Auto (PID drives boiler)
+    </label>
   </div>
 </div>
 
@@ -748,7 +834,7 @@ const timeFmt = v => { let s = parseInt(v); let m = Math.floor(s/60); return m +
 const baseOpts = {
   responsive: true, maintainAspectRatio: false, animation: false,
   interaction: { mode: 'index', intersect: false },
-  plugins: { legend: { labels: { color: '#71717a', font: { size: 11 } } } },
+  plugins: { legend: { labels: { color: '#d1d5db', font: { size: 11 } } } },
 };
 
 const chartTemp = new Chart(document.getElementById('chartTemp').getContext('2d'), {
@@ -758,11 +844,12 @@ const chartTemp = new Chart(document.getElementById('chartTemp').getContext('2d'
     datasets: [
       { label: 'Puck (°F)', data: [], borderColor: '#f59e0b', borderWidth: 2, pointRadius: 0, tension: 0.3 },
       { label: 'Chamber (°F)', data: [], borderColor: '#3b82f6', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+      { label: 'Column (°F)', data: [], borderColor: '#22c55e', borderWidth: 2, pointRadius: 0, tension: 0.3 },
     ]
   },
   options: { ...baseOpts, scales: {
-    x: { ticks: { color: '#71717a', maxTicksLimit: 10, callback: timeFmt }, grid: { color: '#1f2233' } },
-    y: { position: 'left', title: { display: true, text: '°F', color: '#71717a' }, ticks: { color: '#71717a' }, grid: { color: '#1f2233' } }
+    x: { ticks: { color: '#d1d5db', maxTicksLimit: 10, callback: timeFmt }, grid: { color: '#1f2233' } },
+    y: { position: 'left', title: { display: true, text: '°F', color: '#d1d5db' }, ticks: { color: '#d1d5db' }, grid: { color: '#1f2233' } }
   }}
 });
 
@@ -771,13 +858,13 @@ const chartHumid = new Chart(document.getElementById('chartHumid').getContext('2
   data: {
     labels: [],
     datasets: [
-      { label: 'Humidity (%)', data: [], borderColor: '#06b6d4', borderWidth: 2, pointRadius: 0, tension: 0.3,
-        fill: true, backgroundColor: 'rgba(6,182,212,0.1)' },
+      { label: 'Chamber RH (%)', data: [], borderColor: '#06b6d4', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+      { label: 'Column RH (%)', data: [], borderColor: '#f59e0b', borderWidth: 2, pointRadius: 0, tension: 0.3 },
     ]
   },
   options: { ...baseOpts, scales: {
-    x: { ticks: { color: '#71717a', maxTicksLimit: 10, callback: timeFmt }, grid: { color: '#1f2233' } },
-    y: { position: 'left', title: { display: true, text: '%RH', color: '#71717a' }, ticks: { color: '#71717a' }, grid: { color: '#1f2233' }, min: 0, max: 100 }
+    x: { ticks: { color: '#d1d5db', maxTicksLimit: 10, callback: timeFmt }, grid: { color: '#1f2233' } },
+    y: { position: 'left', title: { display: true, text: '%RH', color: '#d1d5db' }, ticks: { color: '#d1d5db' }, grid: { color: '#1f2233' }, min: 0, max: 100 }
   }}
 });
 
@@ -791,8 +878,8 @@ const chartPressure = new Chart(document.getElementById('chartPressure').getCont
     ]
   },
   options: { ...baseOpts, scales: {
-    x: { ticks: { color: '#71717a', maxTicksLimit: 10, callback: timeFmt }, grid: { color: '#1f2233' } },
-    y: { position: 'left', title: { display: true, text: 'Pa', color: '#71717a' }, ticks: { color: '#71717a' }, grid: { color: '#1f2233' } }
+    x: { ticks: { color: '#d1d5db', maxTicksLimit: 10, callback: timeFmt }, grid: { color: '#1f2233' } },
+    y: { position: 'left', title: { display: true, text: 'Pa', color: '#d1d5db' }, ticks: { color: '#d1d5db' }, grid: { color: '#1f2233' } }
   }}
 });
 
@@ -806,8 +893,8 @@ const chartWeight = new Chart(document.getElementById('chartWeight').getContext(
     ]
   },
   options: { ...baseOpts, scales: {
-    x: { ticks: { color: '#71717a', maxTicksLimit: 10, callback: timeFmt }, grid: { color: '#1f2233' } },
-    y: { position: 'left', title: { display: true, text: 'g', color: '#71717a' }, ticks: { color: '#71717a' }, grid: { color: '#1f2233' } }
+    x: { ticks: { color: '#d1d5db', maxTicksLimit: 10, callback: timeFmt }, grid: { color: '#1f2233' } },
+    y: { position: 'left', title: { display: true, text: 'g', color: '#d1d5db' }, ticks: { color: '#d1d5db' }, grid: { color: '#1f2233' } }
   }}
 });
 
@@ -822,6 +909,9 @@ async function poll() {
     document.getElementById('chamberF').textContent = d.chamber_f.toFixed(1);
     document.getElementById('chamberC').textContent = d.chamber_c.toFixed(1);
     document.getElementById('rh').textContent = d.humidity.toFixed(1);
+    document.getElementById('colF').textContent = d.column_f.toFixed(1);
+    document.getElementById('colC').textContent = d.column_c.toFixed(1);
+    document.getElementById('colRh').textContent = d.column_humidity.toFixed(1);
     document.getElementById('pa').textContent = d.pressure_pa.toFixed(2);
 
     document.getElementById('weightG').textContent = d.weight_g.toFixed(3);
@@ -866,9 +956,11 @@ async function pollHistory() {
     chartTemp.data.labels = labels;
     chartTemp.data.datasets[0].data = h.map(p => p.puck);
     chartTemp.data.datasets[1].data = h.map(p => p.chamber);
+    chartTemp.data.datasets[2].data = h.map(p => p.col_f);
     chartTemp.update();
     chartHumid.data.labels = labels;
     chartHumid.data.datasets[0].data = h.map(p => p.rh);
+    chartHumid.data.datasets[1].data = h.map(p => p.col_rh);
     chartHumid.update();
     chartPressure.data.labels = labels;
     chartPressure.data.datasets[0].data = h.map(p => p.pa);
@@ -915,6 +1007,21 @@ function updateTarget(val) {
   fetch('/api/target', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({target_f: parseFloat(val)})
+  });
+}
+
+function updateHumidityTarget(val) {
+  document.getElementById('rhTargetVal').textContent = val;
+  fetch('/api/humidity-target', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({target_rh: parseFloat(val)})
+  });
+}
+
+function toggleHumidityAuto(on) {
+  fetch('/api/humidity-auto', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({on: on})
   });
 }
 
@@ -1006,6 +1113,54 @@ def api_tare():
     ok = hw.tare_scale()
     return jsonify({'ok': ok})
 
+@app.route('/api/humidity-target', methods=['POST'])
+def api_humidity_target():
+    state['target_rh'] = float(request.json.get('target_rh', 50))
+    return jsonify({'ok': True})
+
+@app.route('/api/humidity-auto', methods=['POST'])
+def api_humidity_auto():
+    on = bool(request.json.get('on', False))
+    state['humidity_auto'] = on
+    if not on:
+        hw.set_humidifier(False)
+        state['humidifier'] = False
+    return jsonify({'ok': True})
+
+
+def humidity_pid_loop():
+    """Closed-loop chamber RH: PID -> slow-PWM the MIFASOL boiler SSR.
+    Feedback = chamber SHT41 #1 (state['humidity']). Boiler only ADDS moisture,
+    so output clamps 0-100% (drying is passive / via the exhaust fan)."""
+    integral = 0.0
+    last_err = 0.0
+    i_clamp = 100.0 / max(HUM_KI, 1e-6)   # anti-windup: keep KI*integral <= 100
+    while True:
+        if not state['humidity_auto']:
+            integral = 0.0
+            last_err = 0.0
+            time.sleep(1.0)
+            continue
+        err = state['target_rh'] - state['humidity']
+        if abs(err) <= HUM_DEADBAND:
+            duty = 0.0
+            integral *= 0.98
+        else:
+            integral = max(-i_clamp, min(i_clamp, integral + err * HUM_PWM_WINDOW))
+            deriv = (err - last_err) / HUM_PWM_WINDOW
+            duty = max(0.0, min(100.0, HUM_KP * err + HUM_KI * integral + HUM_KD * deriv))
+        last_err = err
+        on_time = HUM_PWM_WINDOW * duty / 100.0
+        if on_time >= 0.3:
+            hw.set_humidifier(True)
+            state['humidifier'] = True
+            time.sleep(min(on_time, HUM_PWM_WINDOW))
+        hw.set_humidifier(False)
+        state['humidifier'] = False
+        rest = HUM_PWM_WINDOW - on_time
+        if rest > 0:
+            time.sleep(rest)
+
 
 # ── Main ────────────────────────────────────────────────────────────
 
@@ -1017,8 +1172,9 @@ if __name__ == '__main__':
         print("  MODE: Mock (no hardware)")
     else:
         print("  MODE: Live hardware")
-    print(f"  I2C Bus: {I2C_BUS} (software GPIO22/25)")
-    print(f"  SPI: Software (CLK={TC_CLK}, MISO={TC_MISO}, CS={TC_CS})")
+    print(f"  SHT41 I2C: bus {SHT41_BUS} (software GPIO22/25)")
+    print(f"  SDP810 I2C: bus {SDP810_BUS} (hardware GPIO2/3)")
+    print(f"  MAX31855 SPI: bus {SPI_BUS}, CE{SPI_DEVICE} (Pin 24=CE0/dead, Pin 26=CE1/active)")
     print(f"  Heater: GPIO{HEATER_PIN}")
     print(f"  Relays: Modbus RTU @ {MODBUS_PORT}")
     print(f"  Scale: RS232 @ {SCALE_PORT}")
@@ -1027,6 +1183,7 @@ if __name__ == '__main__':
 
     t = threading.Thread(target=sensor_loop, daemon=True)
     t.start()
+    threading.Thread(target=humidity_pid_loop, daemon=True).start()
 
     try:
         app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
