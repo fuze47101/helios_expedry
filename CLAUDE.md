@@ -1151,3 +1151,55 @@ an **ungrounded (isolated-junction) K-type probe**, which is immune to SCG.
 - Co-location sensor calibration → set the offset constants.
 - Finish the automated test-protocol wizard (backend phase-sequencer was started, then paused).
 - Trifilar yoke + read-when-stable for the hanging capsule (SCAD done: `trifilar_yoke.scad`).
+
+## Helios Humidity-Hold Controller — MAJOR UPDATE (2026-06-03, Helios 5 / Opus session)
+This supersedes earlier humidity-source notes. **Verdict: the heated puck + drip can HOLD a chamber RH setpoint on its own — the MIFASOL boiler is NOT needed for holding.** Two independent 60-min runs proved it (data in `data/`).
+
+### Proven results (driphold, 60 min, data/char_driphold_*.csv)
+- **Test 1 (cold start):** reached 80% in 12.9 min; held 47 min, mean 82.4%, SD 0.80%, never < 80.
+- **Test 2 (Hot Start 175°F):** reached 80% in **8.4 min** (preheat cut from ~7 min to ~2.8 min); held 51 min, mean 82.0%, SD 0.65%.
+- Charts: `data/driphold_hold_60min.png`, `data/driphold_test2_vs_test1.png`.
+- Conclusion: puck+drip holds tighter than most commercial chambers. **MIFASOL can be removed.** A second puck column is now only a *ramp-speed* upgrade, not a necessity.
+
+### char_runner — three modes (helios_control.py)
+- **boil**: pump a water charge into the cup, heat, time to target RH. Dry-out detected off PUCK TEMP (puck pins ~212°F while boiling, spikes past `DRY_PUCK_F=245` when dry — NOT off the RH curve). `MAX_PUCK_F=290` safety cutoff → logs FALLOFF.
+- **drip**: preheat dry puck, pulse drips on/off.
+- **driphold** (the keeper): preheat → drip up to target → **closed-loop HOLD**. Two-sided control:
+  - **Pump (drip rate)** climbs/tops up from below; eases off ~2% early and STOPS at setpoint (bands: err>4 full, >2 half, >0.3 trickle, else stop).
+  - **Heater bang-bang** holds puck at `puck_hold_f` (default 240°F ±8) so every drop flashes.
+  - **Exhaust fan vents from above** (35% just-over → 100% way-over) to pull RH back onto target.
+  - Drip gate = `hold_preheat_f` (default 212°F = boiling, so drops flash not pool). Was a hardcoded 210 mismatch — fixed.
+  - CSV footer: `# SUMMARY` (time_to_target, peak_rh, peak_time, water_gone) + `# HOLD` (setpoint, mean/min/max RH, hold_seconds). Files: `~/helios/data/char_<mode>_*.csv`. Save CSV button serves newest; or `scp 'helios@<ip>:~/helios/data/char_*.csv' ~/Desktop/helios/data/`.
+
+### Hot Start (standby pre-warm)
+- Dashboard toggle next to Cartridge Heater + a standby-temp field (default 180°F). `standby_loop()` bang-bangs the heater to hold the puck warm **only when no test is running** (yields to a running test, resumes after). Cuts test preheat from ~7 min (cold) to ~2 min.
+- API `/api/standby` {on, target_f}. State: `standby`, `standby_f`.
+
+### Fans — TWO separate fans (do not conflate)
+- **Circulation fan** = inside chamber, MIXING. On **Modbus relay CH4** (`set_fan`, dashboard "Circulation Fan"). Used by driphold fan modes (continuous/cycle/off). Continuous = best for the hold (sensor reads what the sample sees).
+- **Exhaust fan** = WDERR 12V brushless, VENTING. On **GPIO13 (physical Pin 33!) via a MOSFET module**, **software PWM** (`set_exhaust(0-100%)`, dashboard slider + auto-driven by the vent logic).
+  - **rpi-lgpio hardware PWM does NOT drive the pin on Pi 5** — `GPIO.PWM`/`ChangeDutyCycle` set state but output 0V. Fix: software PWM thread `_exhaust_pwm_loop()` toggling `GPIO.output(EXHAUST_PIN)` at 100 Hz (the proven digital path, same as the heater).
+  - **GOTCHA: GPIO13 = physical Pin 33, NOT physical pin 13.** Pin 33 is adjacent to GND Pin 34. Trigger wire and meter both go to Pin 33.
+  - MOSFET wiring: Pi GPIO13(Pin33)→TRIG/PWM, Pi GND(Pin34)→module GND (bonds Pi+PSU ground), 12V PSU→V+ in, fan across switched OUT (low-side). Common ground Pi↔PSU is mandatory or the gate has no reference.
+  - **OPEN: brushless fan runs nonlinearly on 100 Hz software PWM** — ~75% duty "barely moves," needs high duty to spin; full-on (100%) is fine/silent. TODO: raise effective PWM freq (hardware PWM via lgpio/gpiozero) or treat exhaust more as on/off. `EXHAUST_PWM_HZ` constant now unused.
+- Boiler PID vent logic also rerouted from CH4 to the real exhaust (proportional).
+
+### Dashboard layout (compact, single-screen)
+Reflowed so nothing scrolls: header + 7 sensor tiles pinned across the top (`.grid` = 7 cols), then `.main` 2-column body — **charts left, all controls + Characterization Test panel right**. Paddings/fonts shrunk, chart panes 150px. `Charge s` field hidden unless boil mode. No-cache headers on `/` so the kiosk always pulls fresh (no reboot, just refresh). Deploy = `scp helios_control.py helios@<ip>:~/helios/ && ssh ... "sudo systemctl restart helios"`.
+
+### Pump-timed buttons + calibration
+RUN 10s/20s/30s continuous buttons (`/api/pump_timed`) for pump-volume cal. `PUMP_ML_PER_S=1.667`.
+
+### Second heated-puck column (PLANNED — replaces MIFASOL if more steam/ramp speed wanted)
+- Stay **12V DC**: duplicate the existing column — same 12V 40W cartridges + a **second SSR-10 DD** on a free GPIO (+10kΩ pulldown). NOT AC. Cartridge heaters work on AC or DC identically; only the VOLTAGE RATING matters — a 120V AC ceramic cartridge can't run on the 12V rail and would force mains+AC SSR+GFCI for no benefit. ALITOVE 360W/30A PSU easily covers a 2nd 80W column (~13A total).
+- Software: add 2nd heater channel + its own standby + driphold driving both pucks.
+
+### Pin / GPIO additions this session
+- `HEATER_PIN=5` (SSR-10 DD), `HUMIDIFIER_PIN=6` (SSR-25DA→MIFASOL, being retired), `EXHAUST_PIN=13` (Pin 33, MOSFET, software PWM).
+- Relay (Modbus, addr via pymodbus): CH2 pump, CH4 circulation fan.
+
+### Open / TODO
+- Tune exhaust PWM (brushless nonlinearity at low duty) — hardware PWM or higher freq.
+- Run the dialed-in driphold (tightened drips + active vent) — expect it to land on 80, not 82.
+- Load-cell weight drifted ~0.17g over the hour run — check thermal vs condensate before real capsule weighing; fan OFF + read-when-stable for weighing (trifilar yoke ready).
+- Mount/isolate puck TC (SCG fault). Co-location sensor calibration → offset constants.

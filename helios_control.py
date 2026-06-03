@@ -22,6 +22,7 @@ Usage:
 import time
 import json
 import os
+import math
 import threading
 from collections import deque
 
@@ -44,6 +45,8 @@ from flask import Flask, jsonify, request, Response
 
 HEATER_PIN      = 5          # BCM GPIO5 = Pin 29 (SSR-10 DD trigger +). Was GPIO27 (damaged), then GPIO23 (CAN HAT conflict), now GPIO5 (validated 2026-05-13).
 HUMIDIFIER_PIN  = 6          # BCM GPIO6 = Pin 31 (SSR-25DA trigger +). Switches MIFASOL boiling-pot humidifier (mains). 10k pulldown to GND. Replaces sonic/Modbus-CH6 humidifier for the big chamber.
+EXHAUST_PIN     = 13         # BCM GPIO13 = Pin 33 (hardware PWM1). MOSFET module TRIG/PWM -> WDERR 12V exhaust fan. PWM speed control.
+EXHAUST_PWM_HZ  = 1000       # PWM frequency for the exhaust fan MOSFET (raise toward 20k if it buzzes)
 
 # Humidity PID — closed-loop chamber RH via slow-PWM of the MIFASOL boiler SSR.
 HUM_KP          = 4.0        # %duty per %RH error
@@ -60,6 +63,37 @@ CHAMBER_T_OFFSET_F = 0.0
 CHAMBER_RH_OFFSET  = 0.0
 COLUMN_T_OFFSET_F  = 0.0
 COLUMN_RH_OFFSET   = 0.0
+# Column SHT41 self-heating (sealed cap): the breakout's own heat makes the chip
+# read this many °F hot. Corrected PROPERLY — temp is lowered AND RH is recomputed
+# at the true air temp via preserved dew point (holds across the range, unlike a
+# flat offset). Measure: column-temp minus chamber-temp at steady state, set here.
+COLUMN_SELFHEAT_F  = 14.2
+
+def _sht_crc(b0, b1):
+    """Sensirion CRC-8 (poly 0x31, init 0xFF) over two data bytes — used to
+    reject corrupted SHT41 reads coming over the long, noisy bus-1 cable."""
+    crc = 0xFF
+    for byte in (b0, b1):
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x31) & 0xFF if (crc & 0x80) else (crc << 1) & 0xFF
+    return crc
+
+
+def _selfheat_correct(tc_chip, rh_chip, dT_c):
+    """Compensate an SHT41 for sensor self-heating of dT_c °C. The chip's heat
+    doesn't change the air's actual moisture, so its dew point is preserved — we
+    hold the dew point and recompute RH at the true (cooler) air temperature.
+    Physically correct across the whole temperature range, unlike a flat offset."""
+    if dT_c == 0:
+        return tc_chip, rh_chip
+    a, b = 17.625, 243.04
+    rh = max(1.0, min(100.0, rh_chip))
+    g = math.log(rh / 100.0) + a * tc_chip / (b + tc_chip)
+    td = b * g / (a - g)                       # dew point — unaffected by self-heat
+    tc_air = tc_chip - dT_c                     # true (cooler) air temp
+    rh_air = 100.0 * math.exp(a * td / (b + td) - a * tc_air / (b + tc_air))
+    return tc_air, max(0.0, min(100.0, rh_air))
 SHT41_BUS       = 15         # Software I2C via dtoverlay i2c-gpio (GPIO22=SDA, GPIO25=SCL) — SHT41 works fine here
 SDP810_BUS      = 1          # Hardware I2C bus 1 (GPIO2/Pin3 = SDA, GPIO3/Pin5 = SCL) — SDP810 won't ACK on software bus 15
 SDP810_ADDR     = 0x25
@@ -101,10 +135,23 @@ state = {
     'pump_cycle': 1,         # 0 = continuous, 1/2/3/5 = seconds between pulses
     'pump_pulse_ms': 300,    # pump ON duration per cycle (ms)
     'fan': False,
+    'exhaust': 0,              # exhaust fan PWM speed 0-100% (GPIO13 MOSFET)
     'humidifier': False,
+    'standby': False,          # Hot Start: hold the puck warm between tests
+    'standby_f': 180.0,        # standby hold temperature (F)
     'target_f': 300.0,
     'target_rh': 50.0,
     'humidity_auto': False,
+    'char_running': False,
+    'char_phase': 'IDLE',
+    'char_mode': '',
+    'char_elapsed': 0,
+    'char_time_to_target': 0.0,
+    'char_peak_rh': 0.0,
+    'char_peak_time': 0.0,
+    'char_water_gone_time': 0.0,
+    'char_target_rh': 80.0,
+    'char_csv': '',
     'weight_g': 0.0,
     'weight_stable': False,
     'scale_connected': False,
@@ -113,6 +160,13 @@ state = {
 }
 pump_cycle_thread = None
 pump_cycle_stop = threading.Event()
+
+TEST_DATA_DIR = os.path.expanduser('~/helios/data')
+PUMP_ML_PER_S = 1.667        # calibrated continuous pump rate (DripRateTest.xlsx)
+DRY_PUCK_F = 245.0           # water-gone mark: puck pins ~212F while boiling, spikes past this when dry
+MAX_PUCK_F = 290.0           # dry-puck safety: cut heat once it runs this hot (water long gone)
+char_thread = None
+char_stop = threading.Event()
 history = deque(maxlen=HISTORY_SECONDS)
 lock = threading.Lock()
 
@@ -160,6 +214,13 @@ class Hardware:
         # Heater SSR (SSR-10 DD) + Humidifier SSR (SSR-25DA → MIFASOL)
         GPIO.setup(HEATER_PIN, GPIO.OUT, initial=GPIO.LOW)
         GPIO.setup(HUMIDIFIER_PIN, GPIO.OUT, initial=GPIO.LOW)
+
+        # Exhaust fan — software PWM on GPIO13 via plain digital output (rpi-lgpio
+        # hardware PWM doesn't drive the pin on Pi 5; GPIO.output is proven to work).
+        GPIO.setup(EXHAUST_PIN, GPIO.OUT, initial=GPIO.LOW)
+        self._exhaust_duty = 0.0
+        self._exhaust_run = True
+        threading.Thread(target=self._exhaust_pwm_loop, daemon=True).start()
 
         # Modbus relay client
         self.modbus = ModbusSerialClient(
@@ -246,16 +307,24 @@ class Hardware:
     def read_sht41_column(self):
         if MOCK:
             return 40.0, 104.0, 80.0
-        self.bus_sdp810.write_byte(SHT41_COL_ADDR, 0xFD)
-        time.sleep(0.03)
-        msg = i2c_msg.read(SHT41_COL_ADDR, 6)
-        self.bus_sdp810.i2c_rdwr(msg)
-        d = list(msg)
-        t = (d[0] << 8) | d[1]
-        h = (d[3] << 8) | d[4]
-        c = -45.0 + 175.0 * (t / 65535.0)
-        rh = max(0, min(100, -6.0 + 125.0 * (h / 65535.0)))
-        return c, c * 9 / 5 + 32, rh
+        try:
+            self.bus_sdp810.write_byte(SHT41_COL_ADDR, 0xFD)
+            time.sleep(0.03)
+            msg = i2c_msg.read(SHT41_COL_ADDR, 6)
+            self.bus_sdp810.i2c_rdwr(msg)
+            d = list(msg)
+            # Reject corrupted reads from the long bus-1 cable via Sensirion CRC.
+            if _sht_crc(d[0], d[1]) != d[2] or _sht_crc(d[3], d[4]) != d[5]:
+                raise ValueError("SHT41 column CRC fail")
+            t = (d[0] << 8) | d[1]
+            h = (d[3] << 8) | d[4]
+            c = -45.0 + 175.0 * (t / 65535.0)
+            rh = max(0, min(100, -6.0 + 125.0 * (h / 65535.0)))
+            self._last_col = (c, c * 9 / 5 + 32, rh)
+            return self._last_col
+        except Exception:
+            # bad read (CRC fail or I/O error) — hold last good instead of garbage
+            return getattr(self, '_last_col', (23.0, 73.4, 40.0))
 
     # ── SDP810 (I2C bus 1, hardware) ───────────────────────────────
     def read_pressure(self):
@@ -313,6 +382,22 @@ class Hardware:
         if MOCK:
             return
         GPIO.output(HUMIDIFIER_PIN, GPIO.HIGH if on else GPIO.LOW)
+
+    # ── Exhaust fan (software PWM via MOSFET on GPIO13) ───────────────
+    def set_exhaust(self, pct):
+        self._exhaust_duty = max(0.0, min(100.0, float(pct)))
+
+    def _exhaust_pwm_loop(self):
+        period = 1.0 / 100.0      # 100 Hz software PWM (fine for a fan)
+        while self._exhaust_run:
+            d = self._exhaust_duty
+            if d <= 0:
+                GPIO.output(EXHAUST_PIN, GPIO.LOW);  time.sleep(period); continue
+            if d >= 100:
+                GPIO.output(EXHAUST_PIN, GPIO.HIGH); time.sleep(period); continue
+            on = period * d / 100.0
+            GPIO.output(EXHAUST_PIN, GPIO.HIGH); time.sleep(on)
+            GPIO.output(EXHAUST_PIN, GPIO.LOW);  time.sleep(period - on)
 
     # ── Scale (RS232) ─────────────────────────────────────────────────
     def _scale_reader(self):
@@ -408,6 +493,7 @@ class Hardware:
             return
         GPIO.output(HEATER_PIN, GPIO.LOW)
         GPIO.output(HUMIDIFIER_PIN, GPIO.LOW)
+        self._exhaust_duty = 0.0
         for coil in [RELAY_PUMP, RELAY_FAN]:
             try:
                 self.modbus.write_coil(coil, False, device_id=MODBUS_ID)
@@ -447,7 +533,9 @@ def sensor_loop():
 
         try:
             cc, cf, crh = hw.read_sht41_column()
-            cf += COLUMN_T_OFFSET_F; cc = (cf - 32) * 5 / 9; crh += COLUMN_RH_OFFSET
+            cc, crh = _selfheat_correct(cc, crh, COLUMN_SELFHEAT_F / 1.8)
+            crh = max(0.0, min(100.0, crh + COLUMN_RH_OFFSET))
+            cf = cc * 9 / 5 + 32
             state['column_c'] = round(cc, 1)
             state['column_f'] = round(cf, 1)
             state['column_humidity'] = round(crh, 1)
@@ -513,11 +601,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   header {
     background: linear-gradient(135deg, #1a1d27 0%, #252836 100%);
     border-bottom: 1px solid var(--border);
-    padding: 16px 24px;
+    padding: 8px 16px;
     display: flex; justify-content: space-between; align-items: center;
   }
   header h1 {
-    font-size: 20px; font-weight: 700; letter-spacing: 2px;
+    font-size: 17px; font-weight: 700; letter-spacing: 2px;
     color: var(--accent);
   }
   header .status {
@@ -527,29 +615,41 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     display: inline-block; width:8px; height:8px; border-radius:50%;
     background: var(--green); margin-right:6px; vertical-align: middle;
   }
+  /* ===== compact single-screen layout ===== */
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px; padding: 20px 24px;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 8px; padding: 8px 12px;
   }
   .card {
     background: var(--card); border: 1px solid var(--border);
-    border-radius: 12px; padding: 20px;
+    border-radius: 10px; padding: 8px 10px;
   }
   .card .label {
-    font-size: 14px; text-transform: uppercase; letter-spacing: 1.5px;
-    color: var(--dim); margin-bottom: 8px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--dim); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .card .value {
-    font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums;
-    line-height: 1.1;
+    font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums;
+    line-height: 1.05;
   }
   .card .unit {
-    font-size: 18px; font-weight: 400; color: var(--dim); margin-left: 4px;
+    font-size: 14px; font-weight: 400; color: var(--dim); margin-left: 3px;
   }
   .card .sub {
-    font-size: 15px; color: var(--dim); margin-top: 6px;
+    font-size: 10px; color: var(--dim); margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* two-column body: charts left, controls+test right; sensors stay pinned on top */
+  .main {
+    display: grid;
+    grid-template-columns: 1.25fr 1fr;
+    gap: 10px; padding: 0 12px 10px;
+    align-items: start;
+  }
+  .main > .chart-section { grid-column: 1; grid-row: 1 / 3; }
+  .main > .controls      { grid-column: 2; grid-row: 1; }
+  .main > .target-section{ grid-column: 2; grid-row: 2; }
   .card.puck .value { color: var(--accent); }
   .card.chamber .value { color: var(--blue); }
   .card.humidity .value { color: #06b6d4; }
@@ -567,19 +667,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .tare-btn:active { background: var(--green); color: #000; }
 
   .controls {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 16px; padding: 0 24px 20px;
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 8px; padding: 0;
   }
+  .controls > .ctrl-card[style*="flex-wrap"] { grid-column: 1 / -1; }  /* wide cards span full width */
   .ctrl-card {
     background: var(--card); border: 1px solid var(--border);
-    border-radius: 12px; padding: 20px;
+    border-radius: 10px; padding: 10px 12px;
     display: flex; justify-content: space-between; align-items: center;
   }
   .ctrl-card .info h3 {
-    font-size: 17px; font-weight: 600; margin-bottom: 4px;
+    font-size: 14px; font-weight: 600; margin-bottom: 2px;
   }
   .ctrl-card .info p {
-    font-size: 15px; color: var(--dim);
+    font-size: 11px; color: var(--dim);
   }
   .toggle {
     position: relative; width: 56px; height: 30px; cursor: pointer;
@@ -617,12 +718,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
 
   .target-section {
-    padding: 0 24px 20px;
+    padding: 0;
   }
   .target-card {
     background: var(--card); border: 1px solid var(--border);
-    border-radius: 12px; padding: 20px;
-    display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   }
   .target-card label {
     font-size: 13px; font-weight: 600; white-space: nowrap;
@@ -647,20 +748,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
 
   .chart-section {
-    padding: 0 24px 24px;
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px;
+    padding: 0;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   }
   .chart-card {
     background: var(--card); border: 1px solid var(--border);
-    border-radius: 12px; padding: 16px 20px;
+    border-radius: 10px; padding: 8px 12px;
   }
   .chart-card h3 {
-    font-size: 16px; font-weight: 600; color: var(--dim);
-    text-transform: uppercase; letter-spacing: 1px;
-    margin-bottom: 8px;
+    font-size: 12px; font-weight: 600; color: var(--dim);
+    text-transform: uppercase; letter-spacing: 0.6px;
+    margin-bottom: 4px;
   }
   .chart-wrap {
-    position: relative; height: 220px;
+    position: relative; height: 150px;
   }
 
   .errors {
@@ -724,6 +825,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="main">
 <div class="controls">
   <div class="ctrl-card">
     <div class="info">
@@ -732,6 +834,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <label class="toggle heater">
       <input type="checkbox" id="heaterToggle" onchange="toggleActuator('heater', this.checked)">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="ctrl-card">
+    <div class="info">
+      <h3>Hot Start</h3>
+      <p>Pre-warm &amp; hold puck <input id="standbyTarget" type="number" value="180" onchange="setStandbyTarget(this.value)" style="width:52px;font-size:13px;padding:3px;background:#252836;color:var(--text);border:1px solid var(--border);border-radius:5px;">&deg;F</p>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="standbyToggle" onchange="toggleStandby(this.checked)">
       <span class="slider"></span>
     </label>
   </div>
@@ -755,16 +867,30 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="cyc-btn" data-cyc="10" onclick="setPumpCycle(10)">10s</button>
     </div>
     <input type="hidden" id="pumpCycle" value="1">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;width:100%;margin-top:10px;">
+      <span style="font-size:13px;opacity:.85;width:100%;">Timed continuous run (pump-volume calibration):</span>
+      <button class="cyc-btn" onclick="pumpTimed(10)">RUN 10s</button>
+      <button class="cyc-btn" onclick="pumpTimed(20)">RUN 20s</button>
+      <button class="cyc-btn" onclick="pumpTimed(30)">RUN 30s</button>
+    </div>
   </div>
   <div class="ctrl-card">
     <div class="info">
-      <h3>Exhaust Fan</h3>
-      <p>Modbus CH4</p>
+      <h3>Circulation Fan</h3>
+      <p>Modbus CH4 &bull; chamber mixing</p>
     </div>
     <label class="toggle">
       <input type="checkbox" id="fanToggle" onchange="toggleActuator('fan', this.checked)">
       <span class="slider"></span>
     </label>
+  </div>
+  <div class="ctrl-card" style="flex-wrap:wrap;">
+    <div class="info" style="width:100%;display:flex;justify-content:space-between;align-items:center;">
+      <div><h3>Exhaust Fan</h3><p>GPIO13 PWM &bull; MOSFET &bull; venting</p></div>
+      <div style="font-size:22px;font-weight:700;color:var(--accent);"><span id="exhaustVal">0</span>%</div>
+    </div>
+    <input type="range" min="0" max="100" value="0" id="exhaustSlider" oninput="setExhaust(this.value)"
+           style="width:100%;height:22px;margin-top:8px;">
   </div>
   <div class="ctrl-card">
     <div class="info">
@@ -775,6 +901,57 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <input type="checkbox" id="humidifierToggle" onchange="toggleActuator('humidifier', this.checked)">
       <span class="slider"></span>
     </label>
+  </div>
+  <div class="ctrl-card" style="flex-wrap:wrap;">
+    <div class="info" style="width:100%;margin-bottom:10px;">
+      <h3>Characterization Test</h3>
+      <p>Boil a water charge (or drip onto a hot puck) — logs time-to-target RH to CSV</p>
+    </div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;width:100%;align-items:center;">
+      <label style="font-size:16px;">Mode
+        <select id="charMode" onchange="charFields()" style="margin-left:8px;font-size:19px;padding:10px;border-radius:8px;">
+          <option value="boil">Boil charge</option>
+          <option value="drip">Drip on hot puck</option>
+          <option value="driphold">Drip &rarr; hold RH</option>
+        </select>
+      </label>
+      <label id="charChargeLbl" style="font-size:16px;">Charge&nbsp;s <input id="charCharge" type="number" value="30" style="width:90px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">Target&nbsp;RH% <input id="charTarget" type="number" value="80" style="width:90px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">Timeout&nbsp;min <input id="charTimeout" type="number" value="15" style="width:90px;font-size:19px;padding:10px;"></label>
+    </div>
+    <label style="font-size:16px;width:100%;margin-top:12px;display:flex;align-items:center;gap:10px;">
+      <input type="checkbox" id="charStopAtTarget" style="width:26px;height:26px;">
+      Cut heat at target RH (leave OFF to run to full dry-out &amp; record the humidity peak)
+    </label>
+    <div id="charDripRow" style="display:none;gap:18px;flex-wrap:wrap;width:100%;align-items:center;margin-top:12px;background:#15171f;padding:12px;border-radius:8px;">
+      <span style="font-size:14px;opacity:.85;width:100%;">Drip mode only: after the puck preheats, pulse the pump on/off onto the hot puck.</span>
+      <label style="font-size:16px;">on&nbsp;s <input id="charDripOn" type="number" value="1" style="width:74px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">off&nbsp;s <input id="charDripOff" type="number" value="10" style="width:74px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">repeats <input id="charDripCount" type="number" value="20" style="width:74px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">preheat&nbsp;&deg;F <input id="charPreheat" type="number" value="200" style="width:84px;font-size:19px;padding:10px;"></label>
+    </div>
+    <div id="charHoldRow" style="display:none;gap:18px;flex-wrap:wrap;width:100%;align-items:center;margin-top:12px;background:#15171f;padding:12px;border-radius:8px;">
+      <span style="font-size:14px;opacity:.85;width:100%;">Drip&rarr;hold: preheat the puck, drip onto it to climb to Target RC%, then hold by auto-modulating drip rate + puck heat. (Uses Target RH% &amp; Timeout above.)</span>
+      <label style="font-size:16px;">preheat&nbsp;&deg;F <input id="charHoldPreheat" type="number" value="212" style="width:84px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">hold puck&nbsp;&deg;F <input id="charPuckHold" type="number" value="240" style="width:84px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">drip pulse&nbsp;ms <input id="charDripMs" type="number" value="200" style="width:84px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">climb every&nbsp;s <input id="charClimbInt" type="number" value="2" style="width:74px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">fan
+        <select id="charFanMode" style="margin-left:6px;font-size:19px;padding:10px;border-radius:8px;">
+          <option value="continuous">continuous</option>
+          <option value="cycle">cycle</option>
+          <option value="off">off</option>
+        </select>
+      </label>
+      <label style="font-size:16px;">fan on&nbsp;s <input id="charFanOn" type="number" value="30" style="width:74px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">fan off&nbsp;s <input id="charFanOff" type="number" value="30" style="width:74px;font-size:19px;padding:10px;"></label>
+    </div>
+    <div style="width:100%;display:flex;gap:12px;margin-top:16px;">
+      <button onclick="charStart()" style="flex:2;padding:20px;border-radius:10px;background:var(--green);color:#000;border:none;font-size:19px;font-weight:700;cursor:pointer;">Start Test</button>
+      <button onclick="charStop()" style="flex:1;padding:20px;border-radius:10px;background:var(--red);color:#fff;border:none;font-size:19px;font-weight:700;cursor:pointer;">Stop</button>
+      <button onclick="charDownload()" style="flex:1;padding:20px;border-radius:10px;background:#334155;color:#fff;border:none;font-size:19px;font-weight:700;cursor:pointer;">Save CSV</button>
+    </div>
+    <div id="charStatus" style="width:100%;margin-top:14px;font-size:18px;font-weight:700;">Idle</div>
   </div>
 </div>
 
@@ -826,6 +1003,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <canvas id="chartWeight"></canvas>
     </div>
   </div>
+</div>
 </div>
 
 <script>
@@ -914,6 +1092,23 @@ async function poll() {
     document.getElementById('colRh').textContent = d.column_humidity.toFixed(1);
     document.getElementById('pa').textContent = d.pressure_pa.toFixed(2);
 
+    var cs = document.getElementById('charStatus');
+    if (cs) {
+      var hit80 = d.char_time_to_target > 0
+        ? (d.char_target_rh + '% @ ' + d.char_time_to_target.toFixed(0) + 's')
+        : (d.char_target_rh + '% not reached');
+      var pk = 'peak ' + d.char_peak_rh.toFixed(0) + '%'
+        + (d.char_peak_time > 0 ? (' @ ' + d.char_peak_time.toFixed(0) + 's') : '');
+      var wg = d.char_water_gone_time > 0
+        ? (' • dry @ ' + d.char_water_gone_time.toFixed(0) + 's') : ' • not yet dry';
+      if (d.char_running) {
+        cs.textContent = d.char_phase + ' • ' + d.char_elapsed + 's • RH '
+          + d.humidity.toFixed(0) + '% • ' + hit80 + ' • ' + pk + wg;
+      } else if (d.char_phase && d.char_phase !== 'IDLE') {
+        cs.textContent = 'DONE • ' + hit80 + ' • ' + pk + wg;
+      }
+    }
+
     document.getElementById('weightG').textContent = d.weight_g.toFixed(3);
     let ss = document.getElementById('scaleStatus');
     if (!d.scale_connected) { ss.textContent = 'Disconnected'; ss.className = 'disconnected'; }
@@ -928,6 +1123,10 @@ async function poll() {
     });
     document.getElementById('fanToggle').checked = d.fan;
     document.getElementById('humidifierToggle').checked = d.humidifier;
+    var sb = document.getElementById('standbyToggle'); if (sb) sb.checked = d.standby;
+    var exv = document.getElementById('exhaustVal'); if (exv) exv.textContent = Math.round(d.exhaust);
+    var exs = document.getElementById('exhaustSlider');
+    if (exs && document.activeElement !== exs) exs.value = d.exhaust;
 
     let dot = document.getElementById('statusDot');
     let txt = document.getElementById('statusText');
@@ -986,6 +1185,61 @@ async function togglePump(on) {
   });
 }
 
+function pumpTimed(s) {
+  fetch('/api/pump_timed', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({seconds: s})
+  });
+}
+
+function setExhaust(v) {
+  document.getElementById('exhaustVal').textContent = v;
+  fetch('/api/exhaust', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({pct: parseFloat(v)})});
+}
+function toggleStandby(on) {
+  let t = parseFloat(document.getElementById('standbyTarget').value);
+  fetch('/api/standby', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({on: on, target_f: t})});
+}
+function setStandbyTarget(v) {
+  fetch('/api/standby', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({on: document.getElementById('standbyToggle').checked, target_f: parseFloat(v)})});
+}
+
+function charFields() {
+  var m = document.getElementById('charMode').value;
+  document.getElementById('charDripRow').style.display = (m === 'drip') ? 'flex' : 'none';
+  document.getElementById('charHoldRow').style.display = (m === 'driphold') ? 'flex' : 'none';
+  document.getElementById('charChargeLbl').style.display = (m === 'boil') ? '' : 'none';
+}
+function charStart() {
+  let cfg = {
+    mode: document.getElementById('charMode').value,
+    charge_s: parseFloat(document.getElementById('charCharge').value),
+    target_rh: parseFloat(document.getElementById('charTarget').value),
+    timeout_min: parseFloat(document.getElementById('charTimeout').value),
+    stop_at_target: document.getElementById('charStopAtTarget').checked,
+    drip_on: parseFloat(document.getElementById('charDripOn').value),
+    drip_off: parseFloat(document.getElementById('charDripOff').value),
+    drip_count: parseInt(document.getElementById('charDripCount').value),
+    preheat_f: parseFloat(document.getElementById('charPreheat').value),
+    hold_preheat_f: parseFloat(document.getElementById('charHoldPreheat').value),
+    puck_hold_f: parseFloat(document.getElementById('charPuckHold').value),
+    drip_ms: parseFloat(document.getElementById('charDripMs').value),
+    climb_int: parseFloat(document.getElementById('charClimbInt').value),
+    fan_mode: document.getElementById('charFanMode').value,
+    fan_on_s: parseFloat(document.getElementById('charFanOn').value),
+    fan_off_s: parseFloat(document.getElementById('charFanOff').value)
+  };
+  fetch('/api/char/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg)})
+    .then(r => r.json()).then(d => { if (!d.ok) alert(d.err || 'could not start'); });
+}
+function charStop() {
+  fetch('/api/char/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+}
+function charDownload() { window.open('/api/char/download', '_blank'); }
+
 async function setPumpCycle(val) {
   val = parseInt(val);
   document.getElementById('pumpCycle').value = val;
@@ -1036,7 +1290,9 @@ pollHistory();
 
 @app.route('/')
 def index():
-    return Response(DASHBOARD_HTML, mimetype='text/html')
+    return Response(DASHBOARD_HTML, mimetype='text/html',
+                    headers={'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+                             'Pragma': 'no-cache', 'Expires': '0'})
 
 @app.route('/api/data')
 def api_data():
@@ -1073,6 +1329,24 @@ def api_pump():
         hw.set_pump(False)
     return jsonify({'ok': True})
 
+@app.route('/api/exhaust', methods=['POST'])
+def api_exhaust():
+    pct = float((request.json or {}).get('pct', 0))
+    pct = max(0.0, min(100.0, pct))
+    state['exhaust'] = pct
+    hw.set_exhaust(pct)
+    return jsonify({'ok': True, 'exhaust': pct})
+
+@app.route('/api/standby', methods=['POST'])
+def api_standby():
+    j = request.json or {}
+    state['standby'] = bool(j.get('on', not state['standby']))
+    if 'target_f' in j:
+        state['standby_f'] = float(j['target_f'])
+    if not state['standby'] and not state['char_running']:
+        hw.set_heater(False); state['heater'] = False   # turning Hot Start off cools down
+    return jsonify({'ok': True, 'standby': state['standby'], 'standby_f': state['standby_f']})
+
 @app.route('/api/pump_cycle', methods=['POST'])
 def api_pump_cycle():
     cycle = request.json.get('cycle', 0)
@@ -1108,6 +1382,18 @@ def api_target():
     state['target_f'] = float(f)
     return jsonify({'ok': True})
 
+@app.route('/api/pump_timed', methods=['POST'])
+def api_pump_timed():
+    secs = float(request.json.get('seconds', 10))
+    def _run():
+        # stop any pulse cycle, run pump continuously for `secs`, then off
+        pump_cycle_stop.set()
+        hw.set_pump(True); state['pump'] = True
+        time.sleep(secs)
+        hw.set_pump(False); state['pump'] = False
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({'ok': True, 'seconds': secs})
+
 @app.route('/api/tare', methods=['POST'])
 def api_tare():
     ok = hw.tare_scale()
@@ -1128,6 +1414,22 @@ def api_humidity_auto():
     return jsonify({'ok': True})
 
 
+def standby_loop():
+    """Hot Start: when 'standby' is on AND no characterization test is running,
+    bang-bang the cartridge heater to hold the puck near standby_f (default 180F)
+    so a test can start hot instead of waiting ~7 min from cold. Yields the heater
+    to a running test, then resumes holding when the test ends."""
+    while True:
+        if state.get('standby') and not state['char_running']:
+            pf = state['puck_f']
+            tgt = state.get('standby_f', 180.0)
+            if pf < tgt - 5 and not state['heater']:
+                hw.set_heater(True); state['heater'] = True
+            elif pf > tgt + 5 and state['heater']:
+                hw.set_heater(False); state['heater'] = False
+        time.sleep(2.0)
+
+
 def humidity_pid_loop():
     """Closed-loop chamber RH: PID -> slow-PWM the MIFASOL boiler SSR.
     Feedback = chamber SHT41 #1 (state['humidity']). Boiler only ADDS moisture,
@@ -1142,6 +1444,17 @@ def humidity_pid_loop():
             time.sleep(1.0)
             continue
         err = state['target_rh'] - state['humidity']
+        # RH well ABOVE target: the boiler can't remove moisture, so VENT with the
+        # PWM exhaust fan (GPIO13), ramped by how far over we are, until back near target.
+        if err < -HUM_DEADBAND:
+            hw.set_humidifier(False); state['humidifier'] = False
+            ex = max(40.0, min(100.0, 40.0 + 12.0 * (-err)))   # 40% just-over -> 100% way-over
+            hw.set_exhaust(ex); state['exhaust'] = ex
+            integral *= 0.9
+            last_err = err
+            time.sleep(HUM_PWM_WINDOW)
+            continue
+        hw.set_exhaust(0); state['exhaust'] = 0
         if abs(err) <= HUM_DEADBAND:
             duty = 0.0
             integral *= 0.98
@@ -1160,6 +1473,210 @@ def humidity_pid_loop():
         rest = HUM_PWM_WINDOW - on_time
         if rest > 0:
             time.sleep(rest)
+
+
+# ── Characterization test runner ────────────────────────────────────
+
+def char_runner(cfg):
+    """Automated puck-humidity characterization. BOIL mode: pump a water charge
+    into the cup, heat, time how long to reach target chamber RH. DRIP mode:
+    preheat the puck dry, then pulse drips onto the hot puck. Logs every second
+    to CSV with a summary footer (time-to-target, peak RH, charge volume)."""
+    mode = cfg.get('mode', 'boil')
+    target = float(cfg.get('target_rh', 80))
+    timeout_s = float(cfg.get('timeout_min', 15)) * 60.0
+    charge_s = float(cfg.get('charge_s', 30))
+    drip_on = float(cfg.get('drip_on', 1))
+    drip_off = float(cfg.get('drip_off', 10))
+    drip_count = int(cfg.get('drip_count', 20))
+    preheat_f = float(cfg.get('preheat_f', 200))
+    stop_at_target = bool(cfg.get('stop_at_target', False))
+    # driphold params: climb to target then closed-loop hold via drip rate + puck heat
+    hold_preheat_f = float(cfg.get('hold_preheat_f', 212))
+    puck_hold_f = float(cfg.get('puck_hold_f', 240))
+    drip_ms = float(cfg.get('drip_ms', 200))
+    climb_int = float(cfg.get('climb_int', 2))
+    fan_mode = cfg.get('fan_mode', 'continuous')   # 'off' | 'continuous' | 'cycle'
+    fan_on_s = float(cfg.get('fan_on_s', 30))
+    fan_off_s = float(cfg.get('fan_off_s', 30))
+    charge_ml = charge_s * PUMP_ML_PER_S
+
+    state['humidity_auto'] = False        # don't let the PID fight the test
+    os.makedirs(TEST_DATA_DIR, exist_ok=True)
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    path = os.path.join(TEST_DATA_DIR, f"char_{mode}_{int(charge_s)}s_{ts}.csv")
+    state.update({'char_running': True, 'char_mode': mode, 'char_phase': 'START',
+                  'char_target_rh': target, 'char_elapsed': 0, 'char_time_to_target': 0.0,
+                  'char_peak_rh': 0.0, 'char_peak_time': 0.0, 'char_water_gone_time': 0.0,
+                  'char_csv': path})
+
+    t0 = time.time()
+    ttt = [0.0]          # time-to-target (list so the nested fn can write it)
+    peak = [0.0]; peak_t = [0.0]; water_gone = [0.0]
+    hold = {'n': 0, 'sum': 0.0, 'min': 999.0, 'max': 0.0}   # driphold quality stats
+    f = None
+    try:
+        f = open(path, 'w')
+        f.write(f"# Helios characterization  mode={mode}  started={ts}\n")
+        f.write(f"# charge={charge_s}s = {charge_ml:.1f} mL @ {PUMP_ML_PER_S} mL/s   target_rh={target}%\n")
+        if mode == 'drip':
+            f.write(f"# drip {drip_on}s on / {drip_off}s off x{drip_count}, preheat puck to {preheat_f} F\n")
+        f.write(f"# notes={cfg.get('notes','')}\n")
+        f.write("elapsed_s,phase,puck_f,chamber_f,chamber_rh,column_f,column_rh,pressure_pa,weight_g\n")
+
+        def step(phase):
+            now = time.time() - t0
+            rh = state['humidity']
+            pf = state['puck_f']
+            if rh > peak[0]:
+                peak[0] = rh; peak_t[0] = now
+                state['char_peak_rh'] = round(rh, 1); state['char_peak_time'] = round(now, 1)
+            # DRY-OUT off PUCK TEMP (not the RH curve): puck is pinned ~212F while water boils,
+            # then spikes once the last water is gone. Heat phases only (skip preheat/charge).
+            if water_gone[0] == 0.0 and phase in ('HEAT', 'DRIP-ON', 'DRIP-OFF') and pf > DRY_PUCK_F:
+                water_gone[0] = now; state['char_water_gone_time'] = round(now, 1)
+            if ttt[0] == 0.0 and rh >= target:
+                ttt[0] = now; state['char_time_to_target'] = round(now, 1)
+            state['char_elapsed'] = int(now)
+            state['char_phase'] = phase
+            f.write(f"{now:.1f},{phase},{state['puck_f']},{state['chamber_f']},"
+                    f"{state['humidity']},{state['column_f']},{state['column_humidity']},"
+                    f"{state['pressure_pa']},{state['weight_g']}\n")
+            f.flush()
+
+        def run_for(phase, dur):
+            end = time.time() + dur
+            while time.time() < end and not char_stop.is_set():
+                step(phase); time.sleep(1.0)
+
+        if mode == 'boil':
+            hw.set_pump(True); state['pump'] = True
+            run_for('CHARGE', charge_s)
+            hw.set_pump(False); state['pump'] = False
+            hw.set_heater(True); state['heater'] = True
+            hend = time.time() + max(0.0, timeout_s - charge_s)
+            while time.time() < hend and not char_stop.is_set():
+                step('HEAT')
+                if stop_at_target and ttt[0] > 0.0:   # hit target → stop heating
+                    break
+                if state['puck_f'] > MAX_PUCK_F:       # puck spiked = water gone & dry: cut heat (safety)
+                    hw.set_heater(False); state['heater'] = False
+                    run_for('FALLOFF', max(0.0, hend - time.time()))  # keep logging the RH falloff
+                    break
+                time.sleep(1.0)
+        elif mode == 'driphold':
+            # Preheat puck dry, drip onto it to climb to target, then HOLD the setpoint
+            # by modulating drip frequency (pump) while bang-banging puck heat.
+            pulse_s = max(0.05, drip_ms / 1000.0)
+            if fan_mode == 'continuous':
+                hw.set_fan(True); state['fan'] = True
+            hw.set_heater(True); state['heater'] = True
+            ph_end = t0 + timeout_s
+            while state['puck_f'] < hold_preheat_f and time.time() < ph_end and not char_stop.is_set():
+                step('PREHEAT'); time.sleep(1.0)
+            hold_reached = [False]
+            last_drip = 0.0
+            while time.time() < (t0 + timeout_s) and not char_stop.is_set():
+                rh = state['humidity']; pf = state['puck_f']
+                # circulation fan: cycle on/off to mix the chamber (continuous handled above)
+                if fan_mode == 'cycle':
+                    want = ((time.time() - t0) % (fan_on_s + fan_off_s)) < fan_on_s
+                    if want != state['fan']:
+                        hw.set_fan(want); state['fan'] = want
+                # heater bang-bang: keep puck hot enough to flash drops instantly
+                if pf < puck_hold_f - 8:
+                    hw.set_heater(True); state['heater'] = True
+                elif pf > puck_hold_f + 8:
+                    hw.set_heater(False); state['heater'] = False
+                # drip-rate control: faster when far below target, off when above
+                err = target - rh
+                if   err > 4:    interval = climb_int        # far below: full drip rate
+                elif err > 2:    interval = climb_int * 2     # approaching: ease off early
+                elif err > 0.3:  interval = climb_int * 5     # just under: light top-up only
+                else:            interval = 1e9               # at/above setpoint: STOP dripping
+                if rh >= target:
+                    hold_reached[0] = True
+                phase = 'HOLD' if hold_reached[0] else 'CLIMB'
+                if (time.time() - last_drip) >= interval and pf >= hold_preheat_f:
+                    hw.set_pump(True); state['pump'] = True
+                    time.sleep(pulse_s)
+                    hw.set_pump(False); state['pump'] = False
+                    last_drip = time.time()
+                # active vent: above setpoint -> PWM exhaust pulls RH back onto target
+                if err < -0.5:
+                    ex = max(35.0, min(100.0, 35.0 + 18.0 * (-err)))
+                    hw.set_exhaust(ex); state['exhaust'] = ex
+                elif state['exhaust']:
+                    hw.set_exhaust(0); state['exhaust'] = 0
+                if hold_reached[0]:
+                    hold['n'] += 1; hold['sum'] += rh
+                    hold['min'] = min(hold['min'], rh); hold['max'] = max(hold['max'], rh)
+                step(phase)
+                time.sleep(1.0)
+        else:  # drip
+            hw.set_heater(True); state['heater'] = True
+            ph_end = time.time() + timeout_s
+            while state['puck_f'] < preheat_f and time.time() < ph_end and not char_stop.is_set():
+                step('PREHEAT'); time.sleep(1.0)
+            for _ in range(drip_count):
+                if char_stop.is_set() or (time.time() - t0) > timeout_s:
+                    break
+                hw.set_pump(True); state['pump'] = True
+                run_for('DRIP-ON', drip_on)
+                hw.set_pump(False); state['pump'] = False
+                run_for('DRIP-OFF', drip_off)
+    except Exception as e:
+        print(f"char_runner error: {e}")
+    finally:
+        hw.set_heater(False); state['heater'] = False
+        hw.set_pump(False); state['pump'] = False
+        hw.set_fan(False); state['fan'] = False
+        hw.set_exhaust(0); state['exhaust'] = 0
+        if f:
+            try:
+                reached = 'yes' if ttt[0] else 'no'
+                f.write(f"# SUMMARY  reached_{int(target)}pct={reached}  time_to_target_s={ttt[0]:.1f}  "
+                        f"peak_rh={peak[0]:.1f}  peak_time_s={peak_t[0]:.1f}  "
+                        f"water_gone_s={water_gone[0]:.1f}  charge_ml={charge_ml:.1f}\n")
+                if hold['n'] > 0:
+                    f.write(f"# HOLD  setpoint={int(target)}pct  mean_rh={hold['sum']/hold['n']:.1f}  "
+                            f"min={hold['min']:.1f}  max={hold['max']:.1f}  hold_seconds={hold['n']}\n")
+                f.close()
+            except Exception:
+                pass
+        state['char_phase'] = 'STOPPED' if char_stop.is_set() else 'DONE'
+        state['char_running'] = False
+
+
+@app.route('/api/char/start', methods=['POST'])
+def api_char_start():
+    global char_thread
+    if state['char_running']:
+        return jsonify({'ok': False, 'err': 'A characterization test is already running'})
+    char_stop.clear()
+    char_thread = threading.Thread(target=char_runner, args=(request.json or {},), daemon=True)
+    char_thread.start()
+    return jsonify({'ok': True})
+
+@app.route('/api/char/stop', methods=['POST'])
+def api_char_stop():
+    char_stop.set()
+    try:                                  # always kill outputs, even if no test loop is live
+        hw.set_heater(False); state['heater'] = False
+        hw.set_pump(False); state['pump'] = False
+    except Exception:
+        pass
+    return jsonify({'ok': True})
+
+@app.route('/api/char/download')
+def api_char_download():
+    import glob
+    files = sorted(glob.glob(os.path.join(TEST_DATA_DIR, 'char_*.csv')), key=os.path.getmtime)
+    if not files:
+        return "no characterization CSV yet", 404
+    fn = files[-1]
+    return Response(open(fn).read(), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename={os.path.basename(fn)}'})
 
 
 # ── Main ────────────────────────────────────────────────────────────
@@ -1184,6 +1701,7 @@ if __name__ == '__main__':
     t = threading.Thread(target=sensor_loop, daemon=True)
     t.start()
     threading.Thread(target=humidity_pid_loop, daemon=True).start()
+    threading.Thread(target=standby_loop, daemon=True).start()
 
     try:
         app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
