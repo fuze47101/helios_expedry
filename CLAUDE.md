@@ -1243,3 +1243,45 @@ Four independent metrics all favor Expedry. Uptake **rate** (2–2.5× slower) a
 2. **Add a recovery-rate metric** — "minutes to return to X% of baseline" off the dry-phase slope; this is the discriminator vs WR/DWR.
 3. **Expedry vs DWR, same down, full cycle, weighted on the DRY/recovery phase** — DWR expected to hold water and recover slowly (collapse over repeat/high-water use).
 4. **Repeat in the SAME frame back-to-back** to remove frame-to-frame variance; run a PETG frame blank.
+
+## AUTHORITATIVE Frame → Sample map (2026-06-10) — the BOARD is ground truth, NOT the typed CSV labels
+The intern's typed treatment/species fields are unreliable (clone bug + entry errors). Always key a run by its FRAME LETTER, then look up the sample here.
+
+### The 9 test samples
+1. Gray Goose 1000 FP — Expedry (no ICP) — lot 03262464
+2. Gray Goose 800 FP — Expedry (no ICP) — China
+3. Gray Goose 800 FP — DWR
+4. Gray Goose 800 FP — no treatment
+5. Gray Duck 600 FP — Expedry (no ICP) — lot 0823760
+6. Gray Duck 800 FP — no treatment
+7. Gray Duck 800 FP — Expedry — ICP 2.16 — China
+8. Gray Duck 800 FP — Expedry — ICP 2.02 — China
+9. Gray Duck 800 FP — Expedry — no ICP
+
+### Frame → Sample (physical board, 2026-06-10)
+| Frame | Sample | Identity | Material |
+|---|---|---|---|
+| A | 7 | Duck 800 Expedry 2.16 | PETG white |
+| B | 6 | Duck 800 untreated | PETG white |
+| C | 2 | Goose 800 Expedry (no ICP) | PETG white |
+| D | 9 | Duck 800 Expedry (no ICP) | PETG white |
+| E | 1 | Goose 1000 Expedry | Red PC |
+| F | 3 | Goose 800 DWR | Red PC |
+| G | 4 | Goose 800 untreated | PETG white |
+| H | 5 | Duck 600 Expedry | Red PC |
+| I, J | (none yet) | — | — |
+Frame materials: **PETG white = A, I, B, C, D, G** (low absorption, USE THESE). **Red PC = F, E, H, J** (high absorption — invalid without a PC-in-channel blank).
+
+### Clean controlled comparisons set up by the frames
+- **Goose 800 three-way (same down):** G untreated vs C Expedry vs **F DWR** — run F to get the Expedry-vs-DWR-vs-control.
+- **Duck 800:** B untreated vs A Expedry-2.16 vs D Expedry-no-ICP.
+
+### Sample conditioning (CRITICAL for repeatability) — until a humidity conditioning chamber is built
+Samples must return to a FIXED moisture baseline before re-running, or results swing ~30% (proven: Frame C sample 2 read 0.461 g then 0.320 g across two days, not reset between runs; and the Montebello goose came in pre-wet).
+- **Interim: silica-gel desiccant dry box.** Condition samples ~4–8 h / overnight to a consistent ~5–10% RH baseline. Confirm stable by load-cell weight drift < ~1–2 mg over 30–60 min.
+- Lab ambient RH (Utah 17–20%, weather-dependent) is a MOVING baseline — do not rely on it.
+- New samples planned later this week.
+
+### Corrected result note
+- Yesterday's (06-09) "control vs Expedry" accidentally paired Frame B (DUCK untreated) with Frame C (GOOSE Expedry) — different species, NOT a clean comparison; discard that pairing.
+- **Valid clean result = today's (06-10) Goose 800: Frame G untreated vs Frame C Expedry, PETG-blank-subtracted = Expedry 45% less absorbed, ~48% less retained.** PETG-in-channel blank (Frame, empty) = 0.167 g (vs 0.62 g PC-in-aluminum, 3.7× cleaner). Blank subtraction nearly doubled the measured effect (28% → 45%) — MANDATORY going forward.
