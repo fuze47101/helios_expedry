@@ -1203,3 +1203,43 @@ RUN 10s/20s/30s continuous buttons (`/api/pump_timed`) for pump-volume cal. `PUM
 - Run the dialed-in driphold (tightened drips + active vent) — expect it to land on 80, not 82.
 - Load-cell weight drifted ~0.17g over the hour run — check thermal vs condensate before real capsule weighing; fan OFF + read-when-stable for weighing (trifilar yoke ready).
 - Mount/isolate puck TC (SCG fault). Co-location sensor calibration → offset constants.
+
+## Moisture Protocol UI + Sandwich Capsule — notes (2026-06-04)
+
+### Protocol form fixes (helios_control.py, deployed 2026-06-04)
+- **PPM entry field added** — optional "PPM" input on the Moisture Test panel to record the known treatment concentration of the sample (logged in the CSV header as `ppm=`).
+- **Sample ID field added** — required; used in the CSV filename (`moisture_<id>_<g>g_<ts>.csv`) and header so runs are uniquely identified.
+- **Per-sample fields now blank after each test + prompt if missing.** Problem hit: consecutive runs cloned the same name/metadata because the inputs kept their defaults. Fix: `protoClearFields()` wipes Sample ID / specimen g / treatment / species / PPM when a run finishes (poll detects `_protoWasRunning && !proto_running`), and `protoStart()` refuses to launch until Sample ID, specimen mass, and treatment are filled (alerts which are missing). Test timing fields (target RH / wet / dry / dry-to-RH) persist across a series.
+
+### Forward roadmap / thoughts (Andrew, 2026-06-04)
+- **New pane/sandwich sample holder is the direction** (replaces the concentric TPU cylinder). 250×250 mm clamshell, 10 mm down cavity, mesh on both faces (embed at Z=1.5mm / layer ~12 on a ~0.13mm layer print), 4×4 rib grid, corner post-in-socket registration + 4× M3, flat hang tab → side-loading C-channel with 2 lock pins. PC now (PETG later for lower moisture pickup). Frame ≈ ~130 g vs the ~350 g cylinder. SCAD: `down_sandwich_frame.scad`. Run a **frame blank** (empty cycle) to subtract the frame's own moisture uptake.
+- **Second load cell — side-by-side comparison.** Add a 2nd hanging load cell + C-channel in the chamber so a TREATED and an UNTREATED CONTROL sample run **simultaneously under identical conditions** (same RH, temp, airflow). This is the cleanest way to get the treated-vs-control delta — no run-to-run variation. Needs a 2nd scale input (2nd RS232/USB) + dashboard 2nd-weight plot.
+- **Heated puck + drip is sufficient for the whole humidity job — MIFASOL not needed** (confirmed across the hold + 90-min moisture runs). Keep it.
+- **Next step: test higher humidity** (push setpoint above 80% — 90%+, toward saturation) and confirm the puck+drip+vent loop holds it.
+- **After that: put the SLEEVE on the column** = transition to Test 1 (jacket/fabric over the heated column — sweat-through / moisture egress + thermal), the other half of the apparatus's purpose.
+
+## RESULTS — first controlled treated-vs-control (2026-06-09)
+800 FP gray duck down (LQ China), 3 g, PETG translucent sandwich frames on the channel mount (no aluminum hanger). Same down, Expedry-treated vs untreated control. **First clean efficacy result.**
+
+### Headline numbers (data/petg_full_cycle.png, petg_control_vs_expedry.png)
+| Metric | Control (untreated) | Expedry | Expedry advantage |
+|---|---|---|---|
+| Time to 0.30 g uptake | 14.6 min | 35.9 min | **2.5× slower** |
+| Moisture at 15 min | 0.285 g | 0.085 g | **70% less** |
+| Total absorbed (wet) | 18.6% | 14.8% | 21% less |
+| Retained after 30-min dry | 12.6% | 8.5% | **32% less** |
+| Fraction released (recovery) | 32% | 42% | recovers more |
+
+Four independent metrics all favor Expedry. Uptake **rate** (2–2.5× slower) and **15-min** read are the strongest discriminators — bigger proportional gap than the endpoint.
+
+### Methodology locked in from this run
+- **PETG frames + channel mount = reliable.** Smooth settle-capture curves, no drift. The earlier **PC frame in the aluminum hanger absorbed ~0.62 g (more than the down) — INVALID**, discard. Use PETG-in-channel only.
+- **15-min wet-only "rate test" is the screening/QC workhorse** — report "minutes to reach 0.X g". Keep full 90-min cycle for characterization (need dry phase for recovery).
+- **Frame blank must be PETG-in-channel** (not the old PC/aluminum one); subtract per frame.
+- The treated run (Frame C) was first grabbed at 80 min (incomplete) then re-pulled complete at 94 min — wait for DRY-END before pulling.
+
+### Next experiments (Andrew, 2026-06-09)
+1. **Push to 90% RH** — bigger signal, stresses treatment harder, validates puck+drip+vent can hold 90% (watch condensation near saturation).
+2. **Add a recovery-rate metric** — "minutes to return to X% of baseline" off the dry-phase slope; this is the discriminator vs WR/DWR.
+3. **Expedry vs DWR, same down, full cycle, weighted on the DRY/recovery phase** — DWR expected to hold water and recover slowly (collapse over repeat/high-water use).
+4. **Repeat in the SAME frame back-to-back** to remove frame-to-frame variance; run a PETG frame blank.

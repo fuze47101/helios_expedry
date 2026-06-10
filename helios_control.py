@@ -22,6 +22,7 @@ Usage:
 import time
 import json
 import os
+import re
 import math
 import threading
 from collections import deque
@@ -152,6 +153,18 @@ state = {
     'char_water_gone_time': 0.0,
     'char_target_rh': 80.0,
     'char_csv': '',
+    # Moisture-pickup protocol (wet hold -> dry evacuate, weight-gain test)
+    'proto_running': False,
+    'proto_phase': 'IDLE',     # IDLE / WET / DRY / DONE / STOPPED
+    'proto_elapsed': 0,        # seconds into the current phase
+    'proto_specimen_g': 5.0,
+    'proto_w0': 0.0,           # baseline weight at test start
+    'proto_delta_g': 0.0,      # current weight gain over baseline
+    'proto_gain_pct': 0.0,     # delta as % of dry specimen mass
+    'proto_target_rh': 80.0,
+    'proto_stable_g': 0.0,     # last fans-off settle-capture weight (clean)
+    'proto_stable_delta': 0.0, # last clean capture minus baseline
+    'proto_csv': '',
     'weight_g': 0.0,
     'weight_stable': False,
     'scale_connected': False,
@@ -163,10 +176,14 @@ pump_cycle_stop = threading.Event()
 
 TEST_DATA_DIR = os.path.expanduser('~/helios/data')
 PUMP_ML_PER_S = 1.667        # calibrated continuous pump rate (DripRateTest.xlsx)
+SCALE_SIGN = -1.0            # capsule HANGS (load cell reads negative) -> flip to positive readout
+SCALE_STABLE_BAND = 0.05     # g; reading is "stable" when the recent window spans less than this
 DRY_PUCK_F = 245.0           # water-gone mark: puck pins ~212F while boiling, spikes past this when dry
 MAX_PUCK_F = 290.0           # dry-puck safety: cut heat once it runs this hot (water long gone)
 char_thread = None
 char_stop = threading.Event()
+proto_thread = None
+proto_stop = threading.Event()
 history = deque(maxlen=HISTORY_SECONDS)
 lock = threading.Lock()
 
@@ -246,12 +263,19 @@ class Hardware:
         except:
             pass
 
-        # Ensure all relays off at startup (humidifier is now a GPIO SSR, not a relay)
-        for coil in [RELAY_PUMP, RELAY_FAN]:
-            try:
-                self.modbus.write_coil(coil, False, device_id=MODBUS_ID)
-            except:
-                pass
+        # CRITICAL: force all relays OFF the instant the service starts. The relay
+        # board retains/defaults to its energized state through a Pi reboot, so the
+        # pump can run during the ~20s boot window until this executes. Retry hard.
+        for _ in range(5):
+            ok = True
+            for coil in [RELAY_PUMP, RELAY_FAN]:
+                try:
+                    self.modbus.write_coil(coil, False, device_id=MODBUS_ID)
+                except Exception:
+                    ok = False
+            if ok:
+                break
+            time.sleep(0.2)
 
         # RS232 Scale
         self.scale_ser = None
@@ -259,6 +283,8 @@ class Hardware:
         self._last_weight = 0.0
         self._weight_stable = False
         self._scale_connected = False
+        self._tare = 0.0          # software tare offset (signed)
+        self._wbuf = []           # recent raw weights for stability detection
         # The reader thread opens the port itself and self-heals — handles the
         # port being briefly busy at startup, or the scale unplugged/replugged.
         self._scale_thread = threading.Thread(target=self._scale_reader, daemon=True)
@@ -465,27 +491,41 @@ class Hardware:
             weight = float(line)
             with self._scale_lock:
                 self._last_weight = weight
-                self._weight_stable = stable
                 self._scale_connected = True
+                # real stability: the last ~1.5s of readings span less than the band
+                self._wbuf.append(weight)
+                if len(self._wbuf) > 15:
+                    self._wbuf.pop(0)
+                if len(self._wbuf) >= 8:
+                    self._weight_stable = (max(self._wbuf) - min(self._wbuf)) < SCALE_STABLE_BAND
+                else:
+                    self._weight_stable = False
         except ValueError:
             pass
 
     def read_scale(self):
-        """Return (weight_g, stable, connected)."""
+        """Return (weight_g, stable, connected) — sign-flipped (hanging -> positive)
+        and software-tared."""
         if MOCK:
             return 0.0, False, False
         with self._scale_lock:
-            return self._last_weight, self._weight_stable, self._scale_connected
+            w = SCALE_SIGN * self._last_weight - self._tare
+            return w, self._weight_stable, self._scale_connected
 
     def tare_scale(self):
-        """Send tare command to scale."""
-        if MOCK or not self.scale_ser:
+        """Software tare: the scale's RS232 is output-only (won't accept a 'T' command),
+        so we average a short window of the signed raw weight and store it as the offset."""
+        if MOCK:
             return False
-        try:
-            self.scale_ser.write(b'T\r\n')
+        vals = []
+        for _ in range(12):
+            with self._scale_lock:
+                vals.append(SCALE_SIGN * self._last_weight)
+            time.sleep(0.08)
+        if vals:
+            self._tare = sum(vals) / len(vals)
             return True
-        except:
-            return False
+        return False
 
     # ── Cleanup ─────────────────────────────────────────────────────
     def shutdown(self):
@@ -592,6 +632,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
+  /* fat, grabbable scrollbars for the touchscreen */
+  ::-webkit-scrollbar { width: 18px; height: 18px; }
+  ::-webkit-scrollbar-thumb { background: #3a3d4a; border-radius: 9px; border: 3px solid #0f1117; }
+  ::-webkit-scrollbar-track { background: transparent; }
   body {
     font-family: -apple-system, 'Segoe UI', Roboto, monospace;
     background: var(--bg); color: var(--text);
@@ -778,9 +822,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
 <header>
   <h1>HELIOS STEAM GENERATOR</h1>
-  <div class="status">
-    <span class="dot" id="statusDot"></span>
-    <span id="statusText">Connecting...</span>
+  <div style="display:flex;align-items:center;gap:18px;">
+    <button onclick="allOff()" style="padding:12px 22px;border-radius:10px;background:var(--red);color:#fff;border:none;font-size:17px;font-weight:800;letter-spacing:1px;cursor:pointer;">⏻ ALL OFF</button>
+    <div class="status">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">Connecting...</span>
+    </div>
   </div>
 </header>
 
@@ -867,12 +914,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="cyc-btn" data-cyc="10" onclick="setPumpCycle(10)">10s</button>
     </div>
     <input type="hidden" id="pumpCycle" value="1">
-    <div style="display:flex;gap:8px;flex-wrap:wrap;width:100%;margin-top:10px;">
-      <span style="font-size:13px;opacity:.85;width:100%;">Timed continuous run (pump-volume calibration):</span>
-      <button class="cyc-btn" onclick="pumpTimed(10)">RUN 10s</button>
-      <button class="cyc-btn" onclick="pumpTimed(20)">RUN 20s</button>
-      <button class="cyc-btn" onclick="pumpTimed(30)">RUN 30s</button>
-    </div>
   </div>
   <div class="ctrl-card">
     <div class="info">
@@ -903,55 +944,30 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </label>
   </div>
   <div class="ctrl-card" style="flex-wrap:wrap;">
-    <div class="info" style="width:100%;margin-bottom:10px;">
-      <h3>Characterization Test</h3>
-      <p>Boil a water charge (or drip onto a hot puck) — logs time-to-target RH to CSV</p>
+    <div class="info" style="width:100%;margin-bottom:8px;">
+      <h3>Moisture Test (full protocol)</h3>
+      <p>Wet hold &rarr; dry evacuate &bull; logs capsule weight gain on the load cell. Tare with the empty/dry capsule hanging first.</p>
     </div>
-    <div style="display:flex;gap:18px;flex-wrap:wrap;width:100%;align-items:center;">
-      <label style="font-size:16px;">Mode
-        <select id="charMode" onchange="charFields()" style="margin-left:8px;font-size:19px;padding:10px;border-radius:8px;">
-          <option value="boil">Boil charge</option>
-          <option value="drip">Drip on hot puck</option>
-          <option value="driphold">Drip &rarr; hold RH</option>
-        </select>
-      </label>
-      <label id="charChargeLbl" style="font-size:16px;">Charge&nbsp;s <input id="charCharge" type="number" value="30" style="width:90px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">Target&nbsp;RH% <input id="charTarget" type="number" value="80" style="width:90px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">Timeout&nbsp;min <input id="charTimeout" type="number" value="15" style="width:90px;font-size:19px;padding:10px;"></label>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;width:100%;align-items:center;">
+      <label style="font-size:16px;">specimen&nbsp;g <input id="protoG" type="number" value="5" step="0.1" style="width:80px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">target&nbsp;RH% <input id="protoRH" type="number" value="80" style="width:80px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">wet&nbsp;min <input id="protoWet" type="number" value="60" style="width:80px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">dry&nbsp;min <input id="protoDry" type="number" value="30" style="width:80px;font-size:19px;padding:10px;"></label>
+      <label style="font-size:16px;">dry&nbsp;to&nbsp;RH% <input id="protoDryRH" type="number" value="35" style="width:80px;font-size:19px;padding:10px;"></label>
     </div>
-    <label style="font-size:16px;width:100%;margin-top:12px;display:flex;align-items:center;gap:10px;">
-      <input type="checkbox" id="charStopAtTarget" style="width:26px;height:26px;">
-      Cut heat at target RH (leave OFF to run to full dry-out &amp; record the humidity peak)
-    </label>
-    <div id="charDripRow" style="display:none;gap:18px;flex-wrap:wrap;width:100%;align-items:center;margin-top:12px;background:#15171f;padding:12px;border-radius:8px;">
-      <span style="font-size:14px;opacity:.85;width:100%;">Drip mode only: after the puck preheats, pulse the pump on/off onto the hot puck.</span>
-      <label style="font-size:16px;">on&nbsp;s <input id="charDripOn" type="number" value="1" style="width:74px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">off&nbsp;s <input id="charDripOff" type="number" value="10" style="width:74px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">repeats <input id="charDripCount" type="number" value="20" style="width:74px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">preheat&nbsp;&deg;F <input id="charPreheat" type="number" value="200" style="width:84px;font-size:19px;padding:10px;"></label>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;width:100%;align-items:center;margin-top:10px;">
+      <label style="font-size:16px;">Sample&nbsp;ID <input id="protoID" type="text" value="" placeholder="required" style="width:150px;font-size:16px;padding:10px;"></label>
+      <label style="font-size:16px;">treatment <input id="protoTreat" type="text" value="" placeholder="e.g. Expedry Gold" style="width:170px;font-size:16px;padding:10px;"></label>
+      <label style="font-size:16px;">species <input id="protoSpecies" type="text" value="" placeholder="e.g. duck down" style="width:150px;font-size:16px;padding:10px;"></label>
+      <label style="font-size:16px;">PPM <input id="protoPPM" type="number" value="" placeholder="if known" style="width:100px;font-size:16px;padding:10px;"></label>
     </div>
-    <div id="charHoldRow" style="display:none;gap:18px;flex-wrap:wrap;width:100%;align-items:center;margin-top:12px;background:#15171f;padding:12px;border-radius:8px;">
-      <span style="font-size:14px;opacity:.85;width:100%;">Drip&rarr;hold: preheat the puck, drip onto it to climb to Target RC%, then hold by auto-modulating drip rate + puck heat. (Uses Target RH% &amp; Timeout above.)</span>
-      <label style="font-size:16px;">preheat&nbsp;&deg;F <input id="charHoldPreheat" type="number" value="212" style="width:84px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">hold puck&nbsp;&deg;F <input id="charPuckHold" type="number" value="240" style="width:84px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">drip pulse&nbsp;ms <input id="charDripMs" type="number" value="200" style="width:84px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">climb every&nbsp;s <input id="charClimbInt" type="number" value="2" style="width:74px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">fan
-        <select id="charFanMode" style="margin-left:6px;font-size:19px;padding:10px;border-radius:8px;">
-          <option value="continuous">continuous</option>
-          <option value="cycle">cycle</option>
-          <option value="off">off</option>
-        </select>
-      </label>
-      <label style="font-size:16px;">fan on&nbsp;s <input id="charFanOn" type="number" value="30" style="width:74px;font-size:19px;padding:10px;"></label>
-      <label style="font-size:16px;">fan off&nbsp;s <input id="charFanOff" type="number" value="30" style="width:74px;font-size:19px;padding:10px;"></label>
+    <div style="width:100%;display:flex;gap:12px;margin-top:14px;">
+      <button onclick="tareScale()" style="flex:1;padding:18px;border-radius:10px;background:#334155;color:#fff;border:none;font-size:18px;font-weight:700;cursor:pointer;">Tare</button>
+      <button onclick="protoStart()" style="flex:2;padding:18px;border-radius:10px;background:var(--green);color:#000;border:none;font-size:18px;font-weight:700;cursor:pointer;">Start Test</button>
+      <button onclick="protoStop()" style="flex:1;padding:18px;border-radius:10px;background:var(--red);color:#fff;border:none;font-size:18px;font-weight:700;cursor:pointer;">Stop</button>
+      <button onclick="protoDownload()" style="flex:1;padding:18px;border-radius:10px;background:#334155;color:#fff;border:none;font-size:18px;font-weight:700;cursor:pointer;">Save CSV</button>
     </div>
-    <div style="width:100%;display:flex;gap:12px;margin-top:16px;">
-      <button onclick="charStart()" style="flex:2;padding:20px;border-radius:10px;background:var(--green);color:#000;border:none;font-size:19px;font-weight:700;cursor:pointer;">Start Test</button>
-      <button onclick="charStop()" style="flex:1;padding:20px;border-radius:10px;background:var(--red);color:#fff;border:none;font-size:19px;font-weight:700;cursor:pointer;">Stop</button>
-      <button onclick="charDownload()" style="flex:1;padding:20px;border-radius:10px;background:#334155;color:#fff;border:none;font-size:19px;font-weight:700;cursor:pointer;">Save CSV</button>
-    </div>
-    <div id="charStatus" style="width:100%;margin-top:14px;font-size:18px;font-weight:700;">Idle</div>
+    <div id="protoStatus" style="width:100%;margin-top:12px;font-size:18px;font-weight:700;">Idle</div>
   </div>
 </div>
 
@@ -1109,6 +1125,23 @@ async function poll() {
       }
     }
 
+    var ps = document.getElementById('protoStatus');
+    if (ps) {
+      var dg = (d.proto_delta_g >= 0 ? '+' : '') + d.proto_delta_g.toFixed(3);
+      var sd = (d.proto_stable_delta >= 0 ? '+' : '') + d.proto_stable_delta.toFixed(3);
+      var clean = (d.proto_stable_g ? ' • clean Δ ' + sd + 'g' : '');
+      if (d.proto_running) {
+        ps.textContent = d.proto_phase + ' • ' + Math.floor(d.proto_elapsed/60) + 'm' + (d.proto_elapsed%60)
+          + 's • live Δ ' + dg + 'g (' + d.proto_gain_pct.toFixed(1) + '% of ' + d.proto_specimen_g + 'g)'
+          + clean + ' • RH ' + d.humidity.toFixed(0) + '%';
+      } else if (d.proto_phase && d.proto_phase !== 'IDLE') {
+        ps.textContent = d.proto_phase + ' • final clean Δ ' + sd + 'g (' + (d.proto_stable_delta/d.proto_specimen_g*100).toFixed(1) + '%)';
+      }
+    }
+    // when a run finishes, blank the per-sample fields so the next test can't clone it
+    if (window._protoWasRunning && !d.proto_running) protoClearFields();
+    window._protoWasRunning = d.proto_running;
+
     document.getElementById('weightG').textContent = d.weight_g.toFixed(3);
     let ss = document.getElementById('scaleStatus');
     if (!d.scale_connected) { ss.textContent = 'Disconnected'; ss.className = 'disconnected'; }
@@ -1239,6 +1272,39 @@ function charStop() {
   fetch('/api/char/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
 }
 function charDownload() { window.open('/api/char/download', '_blank'); }
+
+function protoStart() {
+  // prompt for required fields so each run gets fresh, complete metadata
+  let id = document.getElementById('protoID').value.trim();
+  let g  = parseFloat(document.getElementById('protoG').value);
+  let miss = [];
+  if (!id) miss.push('Sample ID');
+  if (!(g > 0)) miss.push('specimen mass (g)');
+  if (!document.getElementById('protoTreat').value.trim()) miss.push('treatment');
+  if (miss.length) { alert('Enter: ' + miss.join(', ')); return; }
+  let cfg = {
+    sample_id: id,
+    specimen_g: g,
+    target_rh: parseFloat(document.getElementById('protoRH').value),
+    wet_min: parseFloat(document.getElementById('protoWet').value),
+    dry_min: parseFloat(document.getElementById('protoDry').value),
+    dry_rh: parseFloat(document.getElementById('protoDryRH').value),
+    treatment: document.getElementById('protoTreat').value.trim(),
+    species: document.getElementById('protoSpecies').value.trim(),
+    ppm: document.getElementById('protoPPM').value.trim()
+  };
+  fetch('/api/protocol/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg)})
+    .then(r => r.json()).then(d => { if (!d.ok) alert(d.err || 'could not start'); });
+}
+// clear the per-sample fields when a test finishes so the next run can't clone it
+function protoClearFields() {
+  ['protoID','protoG','protoTreat','protoSpecies','protoPPM'].forEach(function(k){
+    var e = document.getElementById(k); if (e) e.value = '';
+  });
+}
+function protoStop() { fetch('/api/protocol/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); }
+function allOff() { fetch('/api/all_off', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); }
+function protoDownload() { window.open('/api/protocol/download', '_blank'); }
 
 async function setPumpCycle(val) {
   val = parseInt(val);
@@ -1420,7 +1486,7 @@ def standby_loop():
     so a test can start hot instead of waiting ~7 min from cold. Yields the heater
     to a running test, then resumes holding when the test ends."""
     while True:
-        if state.get('standby') and not state['char_running']:
+        if state.get('standby') and not state['char_running'] and not state['proto_running']:
             pf = state['puck_f']
             tgt = state.get('standby_f', 180.0)
             if pf < tgt - 5 and not state['heater']:
@@ -1661,9 +1727,11 @@ def api_char_start():
 @app.route('/api/char/stop', methods=['POST'])
 def api_char_stop():
     char_stop.set()
+    state['standby'] = False
     try:                                  # always kill outputs, even if no test loop is live
         hw.set_heater(False); state['heater'] = False
         hw.set_pump(False); state['pump'] = False
+        hw.set_exhaust(0); state['exhaust'] = 0
     except Exception:
         pass
     return jsonify({'ok': True})
@@ -1674,6 +1742,229 @@ def api_char_download():
     files = sorted(glob.glob(os.path.join(TEST_DATA_DIR, 'char_*.csv')), key=os.path.getmtime)
     if not files:
         return "no characterization CSV yet", 404
+    fn = files[-1]
+    return Response(open(fn).read(), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename={os.path.basename(fn)}'})
+
+
+# ── Moisture-pickup test protocol (WET hold -> DRY evacuate) ─────────
+
+def protocol_runner(cfg):
+    """Full moisture test on the hanging capsule. WET: hold target RH (puck+drip up,
+    exhaust vent, circulation mix). DRY: vent the chamber down to dry_rh then idle.
+    Every settle_every seconds it does a SETTLE window — pauses pump/fan/exhaust,
+    lets the capsule stop swinging, and captures a clean weight (the trustworthy number,
+    free of airflow force). CSV footer reports absorbed/released/retained from the
+    clean settled weights at baseline, wet-end, and dry-end."""
+    specimen_g = max(0.001, float(cfg.get('specimen_g', 5.0)))
+    sample_id  = re.sub(r'[^A-Za-z0-9_-]', '', str(cfg.get('sample_id', '')))[:40] or 'sample'
+    treatment  = str(cfg.get('treatment', ''))[:60]
+    species    = str(cfg.get('species', ''))[:60]
+    ppm        = str(cfg.get('ppm', ''))[:20]
+    target     = float(cfg.get('target_rh', 80))
+    wet_s      = float(cfg.get('wet_min', 60)) * 60.0
+    dry_s      = float(cfg.get('dry_min', 30)) * 60.0
+    dry_rh     = float(cfg.get('dry_rh', 35))
+    puck_hold_f= float(cfg.get('puck_hold_f', 240))
+    drip_ms    = float(cfg.get('drip_ms', 200))
+    climb_int  = float(cfg.get('climb_int', 2))
+    preheat_f  = float(cfg.get('preheat_f', 212))
+    settle_every = float(cfg.get('settle_every', 300))   # weigh-window cadence (s)
+    settle_dur   = float(cfg.get('settle_dur', 30))      # settle/quiet duration (s)
+    pulse_s    = max(0.05, drip_ms / 1000.0)
+
+    state['humidity_auto'] = False
+    os.makedirs(TEST_DATA_DIR, exist_ok=True)
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    path = os.path.join(TEST_DATA_DIR, f"moisture_{sample_id}_{specimen_g:g}g_{ts}.csv")
+    state.update({'proto_running': True, 'proto_phase': 'WAIT-STABLE', 'proto_elapsed': 0,
+                  'proto_specimen_g': specimen_g, 'proto_w0': 0.0, 'proto_delta_g': 0.0,
+                  'proto_gain_pct': 0.0, 'proto_target_rh': target, 'proto_csv': path,
+                  'proto_stable_g': 0.0, 'proto_stable_delta': 0.0})
+
+    # ---- gate: don't begin until the scale is stable, then auto-tare ----
+    ws_end = time.time() + 180          # safety: proceed after 3 min even if never settles
+    stable_since = None
+    while not proto_stop.is_set() and time.time() < ws_end:
+        if state.get('weight_stable') and state.get('scale_connected'):
+            if stable_since is None:
+                stable_since = time.time()
+            elif time.time() - stable_since >= 3.0:   # stable for 3 s straight
+                break
+        else:
+            stable_since = None
+        time.sleep(0.5)
+    if proto_stop.is_set():
+        state['proto_phase'] = 'STOPPED'; state['proto_running'] = False
+        return
+    hw.tare_scale()                     # auto-tare once stable
+    time.sleep(0.8)                     # let the tared reading propagate to state
+
+    t0 = time.time()
+    w0 = [state['weight_g']]
+    wet_end_w = [0.0]; dry_end_w = [0.0]; peak_w = [state['weight_g']]
+    f = None
+    try:
+        f = open(path, 'w')
+        f.write(f"# Helios moisture-pickup test  started={ts}\n")
+        f.write(f"# sample_id={sample_id}  specimen={specimen_g}g  treatment={treatment}  species={species}  ppm={ppm}\n")
+        f.write(f"# target_rh={target}%  wet={wet_s/60:.0f}min  dry={dry_s/60:.0f}min  dry_to_rh={dry_rh}%  settle_every={settle_every:.0f}s\n")
+        f.write("elapsed_s,phase,weight_g,delta_g,pct_of_dry,chamber_rh,chamber_f,puck_f,column_rh,pressure_pa\n")
+
+        def logrow(phase):
+            now = time.time() - t0
+            w = state['weight_g']; d = w - w0[0]
+            if w > peak_w[0]: peak_w[0] = w
+            state['proto_phase'] = phase
+            state['proto_elapsed'] = int(now)
+            state['proto_delta_g'] = round(d, 3)
+            state['proto_gain_pct'] = round(d / specimen_g * 100, 1)
+            f.write(f"{now:.1f},{phase},{w:.3f},{d:.3f},{d/specimen_g*100:.1f},"
+                    f"{state['humidity']},{state['chamber_f']},{state['puck_f']},"
+                    f"{state['column_humidity']},{state['pressure_pa']}\n")
+            f.flush()
+
+        def settle(label):
+            # pause everything that moves air; let the capsule settle; capture a clean weight
+            hw.set_pump(False); state['pump'] = False
+            hw.set_fan(False); state['fan'] = False
+            hw.set_exhaust(0); state['exhaust'] = 0
+            end = time.time() + settle_dur
+            while time.time() < end and not proto_stop.is_set():
+                logrow('SETTLE-' + label); time.sleep(1.0)
+            cap = state['weight_g']
+            state['proto_stable_g'] = round(cap, 3)
+            state['proto_stable_delta'] = round(cap - w0[0], 3)
+            f.write(f"# STABLE {label}  t={time.time()-t0:.0f}s  weight={cap:.3f}  "
+                    f"delta={cap-w0[0]:.3f}  pct={(cap-w0[0])/specimen_g*100:.1f}\n")
+            f.flush()
+            return cap
+
+        # ---- clean baseline (fans are off at start) ----
+        w0[0] = settle('BASELINE')
+
+        # ---- WET: hold target RH, periodic settle windows ----
+        hw.set_heater(True); state['heater'] = True
+        hw.set_fan(True); state['fan'] = True
+        ph_end = t0 + 300
+        while state['puck_f'] < preheat_f and time.time() < ph_end and not proto_stop.is_set():
+            logrow('WET-PREHEAT'); time.sleep(1.0)
+        wet_until = time.time() + wet_s
+        last_drip = 0.0; last_settle = time.time()
+        while time.time() < wet_until and not proto_stop.is_set():
+            rh = state['humidity']; pf = state['puck_f']
+            if pf < puck_hold_f - 8:
+                hw.set_heater(True); state['heater'] = True
+            elif pf > puck_hold_f + 8:
+                hw.set_heater(False); state['heater'] = False
+            err = target - rh
+            if   err > 4:    interval = climb_int
+            elif err > 2:    interval = climb_int * 2
+            elif err > 0.3:  interval = climb_int * 5
+            else:            interval = 1e9
+            if (time.time() - last_drip) >= interval and pf >= preheat_f:
+                hw.set_pump(True); state['pump'] = True
+                time.sleep(pulse_s)
+                hw.set_pump(False); state['pump'] = False
+                last_drip = time.time()
+            if err < -0.5:
+                ex = max(35.0, min(100.0, 35.0 + 18.0 * (-err)))
+                hw.set_exhaust(ex); state['exhaust'] = ex
+            elif state['exhaust']:
+                hw.set_exhaust(0); state['exhaust'] = 0
+            logrow('WET'); time.sleep(1.0)
+            if time.time() - last_settle >= settle_every:
+                settle('WET'); last_settle = time.time()
+                hw.set_fan(True); state['fan'] = True   # resume mixing after the window
+        hw.set_pump(False); state['pump'] = False
+        hw.set_heater(False); state['heater'] = False
+        wet_end_w[0] = settle('WET-END')
+
+        # ---- DRY: vent down to dry_rh then idle; periodic settle windows ----
+        dry_until = time.time() + dry_s
+        last_settle = time.time()
+        while time.time() < dry_until and not proto_stop.is_set():
+            rh = state['humidity']
+            if rh > dry_rh + 2:                       # above target -> evacuate
+                hw.set_exhaust(100); state['exhaust'] = 100
+                hw.set_fan(True); state['fan'] = True
+            elif rh <= dry_rh:                        # reached dry level -> stop, go quiet
+                hw.set_exhaust(0); state['exhaust'] = 0
+                hw.set_fan(False); state['fan'] = False
+            logrow('DRY'); time.sleep(1.0)
+            if time.time() - last_settle >= settle_every:
+                settle('DRY'); last_settle = time.time()
+        dry_end_w[0] = settle('DRY-END')
+    except Exception as e:
+        print(f"protocol_runner error: {e}")
+    finally:
+        hw.set_heater(False); state['heater'] = False
+        hw.set_pump(False); state['pump'] = False
+        hw.set_exhaust(0); state['exhaust'] = 0
+        hw.set_fan(False); state['fan'] = False
+        if f:
+            try:
+                b = w0[0]; wend = wet_end_w[0]; dend = dry_end_w[0]
+                f.write(f"# WET  baseline_w={b:.3f}  wet_end_w={wend:.3f}  "
+                        f"absorbed_g={wend-b:.3f}  absorbed_pct={(wend-b)/specimen_g*100:.1f}  peak_w={peak_w[0]:.3f}\n")
+                f.write(f"# DRY  dry_end_w={dend:.3f}  released_g={wend-dend:.3f}  "
+                        f"retained_g={dend-b:.3f}  retained_pct={(dend-b)/specimen_g*100:.1f}\n")
+                f.close()
+            except Exception:
+                pass
+        state['proto_phase'] = 'STOPPED' if proto_stop.is_set() else 'DONE'
+        state['proto_running'] = False
+
+
+@app.route('/api/protocol/start', methods=['POST'])
+def api_protocol_start():
+    global proto_thread
+    if state['proto_running']:
+        return jsonify({'ok': False, 'err': 'A moisture test is already running'})
+    if state['char_running']:
+        return jsonify({'ok': False, 'err': 'Stop the characterization test first'})
+    proto_stop.clear()
+    proto_thread = threading.Thread(target=protocol_runner, args=(request.json or {},), daemon=True)
+    proto_thread.start()
+    return jsonify({'ok': True})
+
+@app.route('/api/protocol/stop', methods=['POST'])
+def api_protocol_stop():
+    proto_stop.set()
+    state['standby'] = False          # don't let Hot Start re-fire the heater
+    state['humidity_auto'] = False
+    try:
+        hw.set_heater(False); state['heater'] = False
+        hw.set_pump(False); state['pump'] = False
+        hw.set_exhaust(0); state['exhaust'] = 0
+    except Exception:
+        pass
+    return jsonify({'ok': True})
+
+@app.route('/api/all_off', methods=['POST'])
+def api_all_off():
+    """PANIC: abort every test and force ALL outputs off. Use instead of rebooting."""
+    char_stop.set(); proto_stop.set()
+    state['standby'] = False
+    state['humidity_auto'] = False
+    for _ in range(3):                # hit it a few times in case of a transient bus error
+        try:
+            hw.set_heater(False); state['heater'] = False
+            hw.set_humidifier(False); state['humidifier'] = False
+            hw.set_pump(False); state['pump'] = False
+            hw.set_fan(False); state['fan'] = False
+            hw.set_exhaust(0); state['exhaust'] = 0
+        except Exception:
+            pass
+        time.sleep(0.1)
+    return jsonify({'ok': True})
+
+@app.route('/api/protocol/download')
+def api_protocol_download():
+    import glob
+    files = sorted(glob.glob(os.path.join(TEST_DATA_DIR, 'moisture_*.csv')), key=os.path.getmtime)
+    if not files:
+        return "no moisture-test CSV yet", 404
     fn = files[-1]
     return Response(open(fn).read(), mimetype='text/csv',
                     headers={'Content-Disposition': f'attachment; filename={os.path.basename(fn)}'})
