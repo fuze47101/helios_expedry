@@ -1284,4 +1284,36 @@ Samples must return to a FIXED moisture baseline before re-running, or results s
 
 ### Corrected result note
 - Yesterday's (06-09) "control vs Expedry" accidentally paired Frame B (DUCK untreated) with Frame C (GOOSE Expedry) — different species, NOT a clean comparison; discard that pairing.
-- **Valid clean result = today's (06-10) Goose 800: Frame G untreated vs Frame C Expedry, PETG-blank-subtracted = Expedry 45% less absorbed, ~48% less retained.** PETG-in-channel blank (Frame, empty) = 0.167 g (vs 0.62 g PC-in-aluminum, 3.7× cleaner). Blank subtraction nearly doubled the measured effect (28% → 45%) — MANDATORY going forward.
+- **Valid clean result = today's (06-10) Goose 800: Frame G untreated vs Frame C Expedry, PETG-blank-subtracted = Expedry 45% less absorbed, ~48% less retained.** PETG-in-channel blank (Frame, empty) = 0.167 g (vs 0.62 g PC-in-aluminum, 3.7× cleaner). Blank subtraction nearly doubled the measured effect (28% → 45%) — MANDATORY going forward. **[SUPERSEDED — see 06-12 below: the 45% Expedry-vs-DWR gap was a conditioning artifact and is RETIRED.]**
+
+## CONDITIONING PROVEN + CONDITIONED THREE-WAY — 2026-06-12 (supersedes the 06-10 Expedry-vs-DWR claim)
+
+### Conditioning artifact confirmed, then fixed
+- **Same Frame C (Goose 800 Expedry) ran two days apart gave wildly different results purely from baseline moisture state:**
+  - 06-10 (conditioned/drier): 15-min 0.091 g, absorbed 0.153 g (blank-sub), retained −0.030 g (released all)
+  - 06-11 evening (un-conditioned/pre-wet): 15-min 0.166 g, absorbed 0.296 g, retained 0.097 g (held water)
+  - ~2× swing on the SAME physical sample. Baseline conditioning dwarfs the treatment effect. **The 06-11 evening run (`moisture_sample_3g_20260611_173204.csv`) is INVALID — discard.**
+- **Fix that works (team ran it 06-12): dehydrator-dry to plateau, then seal in a Ziploc until cool, then weigh-in/tare/run.** Best practice = dry to CONSTANT MASS (two balance reads within ~2 mg), not a fixed clock; long game = anchor everything to a constant-mass dry reference for ASTM/IDFB.
+
+### Conditioned same-day three-way — Goose 800, 80% RH, all complete (THE NEW BASELINE)
+Files (all 06-12, conditioned, Ziploc-cooled): G=`moisture_sample_3g_20260612_124207.csv`, F=`..._142940.csv`, C=`..._184523.csv`. Blank = 0.167 g abs / 0.184 g ret (06-10 PETG-in-channel).
+
+| (down-only, blank-sub) | absorbed | retained | released | 15-min |
+|---|---|---|---|---|
+| Untreated (G, sample 4) | 0.512 g | 0.248 g | 36% | 0.340 |
+| DWR (F, sample 3) | 0.282 g | 0.055 g | 47% | 0.278 |
+| Expedry (C, sample 2, no ICP) | 0.290 g | 0.066 g | 45% | 0.336 |
+
+- **Both treatments cut uptake ~44% vs untreated** (0.28–0.29 vs 0.51 g) — strong, trustworthy treatment effect on conditioned same-day data.
+- **Expedry ≈ DWR — statistically tied this run** (Expedry absorbed 3% MORE; release within 2 pts; retained within 0.011 g = noise). DWR did NOT retain more in a single cycle.
+- **RETIRE the 06-10 "Expedry 45% better than DWR" claim** — it was the conditioning artifact (06-10 C was the low/under-conditioned read). Properly conditioned, single-cycle 80% cannot separate Expedry from DWR.
+
+### Why this is EXPECTED / good news (Andrew, 2026-06-12)
+- Andrew's thesis all along: **"WR and Expedry are nearly identical on the FIRST run; DWR collapses over REPEAT use and higher water and can't release."** A single conditioned 80% cycle = the "initial test" → they match, exactly as predicted. This run sets up the differentiator test; it does not refute the thesis.
+- **ICP caveat:** the Expedry on these samples is **low ICP (~2.0 range); target is >2.5–3.0.** A ~2.0-ICP Expedry matching (not beating) DWR on cycle 1 is the expected behavior. Good to know for supplier conversations — what's being shipped is under spec.
+- Everything is **n=1 per treatment** — run-to-run noise floor unknown; differences under ~0.05 g are meaningless until replicated (n≥3).
+
+### Next test (planned 2026-06-13): 5-run repeat-wetting collapse test
+- Wet/dry the SAME DWR sample (Frame F) back-to-back 5× and watch for progressive absorbed↑ / released↓ (the collapse). Run Expedry (Frame C) alongside as the control that should NOT collapse.
+- Also queued: 90%+ RH high-water stress; recovery-rate metric (minutes to return to X% off the dry slope); n≥3 replicates to establish noise floor.
+- Protocol: `repeat_wetting_protocol.md` (helios folder).

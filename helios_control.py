@@ -140,6 +140,9 @@ state = {
     'humidifier': False,
     'standby': False,          # Hot Start: hold the puck warm between tests
     'standby_f': 180.0,        # standby hold temperature (F)
+    'standby_timeout_min': 15, # auto-off Hot Start after this many idle min (no test)
+    '_standby_armed': 0.0,     # internal: when the idle timer started
+    'standby_remaining_s': 0,  # seconds until Hot Start auto-off (0 if off)
     'target_f': 300.0,
     'target_rh': 50.0,
     'humidity_auto': False,
@@ -884,15 +887,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <span class="slider"></span>
     </label>
   </div>
-  <div class="ctrl-card">
-    <div class="info">
-      <h3>Hot Start</h3>
-      <p>Pre-warm &amp; hold puck <input id="standbyTarget" type="number" value="180" onchange="setStandbyTarget(this.value)" style="width:52px;font-size:13px;padding:3px;background:#252836;color:var(--text);border:1px solid var(--border);border-radius:5px;">&deg;F</p>
+  <div class="ctrl-card" style="flex-wrap:wrap;">
+    <div class="info" style="width:100%;display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <h3>Hot Start</h3>
+        <p>Hold puck <input id="standbyTarget" type="number" value="180" onchange="setStandbyTarget(this.value)" style="width:52px;font-size:13px;padding:3px;background:#252836;color:var(--text);border:1px solid var(--border);border-radius:5px;">&deg;F &bull; auto-off <input id="standbyTimeout" type="number" value="15" onchange="setStandbyTarget(document.getElementById('standbyTarget').value)" style="width:46px;font-size:13px;padding:3px;background:#252836;color:var(--text);border:1px solid var(--border);border-radius:5px;"> min</p>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="standbyToggle" onchange="toggleStandby(this.checked)">
+        <span class="slider"></span>
+      </label>
     </div>
-    <label class="toggle">
-      <input type="checkbox" id="standbyToggle" onchange="toggleStandby(this.checked)">
-      <span class="slider"></span>
-    </label>
+    <div id="standbyBanner" style="display:none;width:100%;margin-top:8px;background:#3a2a12;border:1px solid #f59e0b;border-radius:10px;padding:12px 16px;text-align:center;">
+      <div style="font-size:15px;color:#fbbf24;">Hot Start shuts off in</div>
+      <div id="standbyCountdown" style="font-size:40px;font-weight:800;color:#f59e0b;font-variant-numeric:tabular-nums;line-height:1.1;">--:--</div>
+      <button onclick="toggleStandby(true)" style="margin-top:6px;padding:12px 26px;border-radius:10px;background:var(--green);color:#000;border:none;font-size:17px;font-weight:700;cursor:pointer;">Keep warm &mdash; reset timer</button>
+    </div>
   </div>
   <div class="ctrl-card" style="flex-wrap:wrap;">
     <div class="info" style="width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -1157,6 +1167,15 @@ async function poll() {
     document.getElementById('fanToggle').checked = d.fan;
     document.getElementById('humidifierToggle').checked = d.humidifier;
     var sb = document.getElementById('standbyToggle'); if (sb) sb.checked = d.standby;
+    var ban = document.getElementById('standbyBanner');
+    if (ban) {
+      if (d.standby) {
+        ban.style.display = 'block';
+        var sbs = Math.max(0, d.standby_remaining_s|0);
+        var sbm = Math.floor(sbs/60), sbsec = sbs%60;
+        document.getElementById('standbyCountdown').textContent = sbm + ':' + (sbsec<10?'0':'') + sbsec;
+      } else { ban.style.display = 'none'; }
+    }
     var exv = document.getElementById('exhaustVal'); if (exv) exv.textContent = Math.round(d.exhaust);
     var exs = document.getElementById('exhaustSlider');
     if (exs && document.activeElement !== exs) exs.value = d.exhaust;
@@ -1230,14 +1249,18 @@ function setExhaust(v) {
   fetch('/api/exhaust', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({pct: parseFloat(v)})});
 }
+function _standbyCfg(on) {
+  return { on: on,
+    target_f: parseFloat(document.getElementById('standbyTarget').value),
+    timeout_min: parseFloat(document.getElementById('standbyTimeout').value) };
+}
 function toggleStandby(on) {
-  let t = parseFloat(document.getElementById('standbyTarget').value);
-  fetch('/api/standby', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({on: on, target_f: t})});
+  document.getElementById('standbyToggle').checked = on;
+  fetch('/api/standby', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(_standbyCfg(on))});
 }
 function setStandbyTarget(v) {
   fetch('/api/standby', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({on: document.getElementById('standbyToggle').checked, target_f: parseFloat(v)})});
+    body: JSON.stringify(_standbyCfg(document.getElementById('standbyToggle').checked))});
 }
 
 function charFields() {
@@ -1409,9 +1432,14 @@ def api_standby():
     state['standby'] = bool(j.get('on', not state['standby']))
     if 'target_f' in j:
         state['standby_f'] = float(j['target_f'])
+    if 'timeout_min' in j:
+        state['standby_timeout_min'] = float(j['timeout_min'])
+    if state['standby']:
+        state['_standby_armed'] = time.time()           # (re)arm the idle timer
     if not state['standby'] and not state['char_running']:
         hw.set_heater(False); state['heater'] = False   # turning Hot Start off cools down
-    return jsonify({'ok': True, 'standby': state['standby'], 'standby_f': state['standby_f']})
+    return jsonify({'ok': True, 'standby': state['standby'], 'standby_f': state['standby_f'],
+                    'standby_timeout_min': state['standby_timeout_min']})
 
 @app.route('/api/pump_cycle', methods=['POST'])
 def api_pump_cycle():
@@ -1481,19 +1509,33 @@ def api_humidity_auto():
 
 
 def standby_loop():
-    """Hot Start: when 'standby' is on AND no characterization test is running,
-    bang-bang the cartridge heater to hold the puck near standby_f (default 180F)
-    so a test can start hot instead of waiting ~7 min from cold. Yields the heater
-    to a running test, then resumes holding when the test ends."""
+    """Hot Start: when 'standby' is on AND no test is running, bang-bang the cartridge
+    heater to hold the puck near standby_f (default 180F). Yields to a running test and
+    resumes after. SAFETY: auto-shuts off after standby_timeout_min idle (no test) so it
+    can't hold 180F all night/weekend — the timer resets while a test runs."""
     while True:
-        if state.get('standby') and not state['char_running'] and not state['proto_running']:
-            pf = state['puck_f']
-            tgt = state.get('standby_f', 180.0)
-            if pf < tgt - 5 and not state['heater']:
-                hw.set_heater(True); state['heater'] = True
-            elif pf > tgt + 5 and state['heater']:
-                hw.set_heater(False); state['heater'] = False
-        time.sleep(2.0)
+        if state.get('standby'):
+            tmo = state.get('standby_timeout_min', 15) * 60.0
+            if state['char_running'] or state['proto_running']:
+                state['_standby_armed'] = time.time()    # hold the timer while a test runs
+                state['standby_remaining_s'] = int(tmo)
+            else:
+                idle = time.time() - state.get('_standby_armed', time.time())
+                state['standby_remaining_s'] = int(max(0, tmo - idle))
+                if idle > tmo:
+                    state['standby'] = False              # SAFETY auto-off
+                    hw.set_heater(False); state['heater'] = False
+                    state['standby_remaining_s'] = 0
+                    print("Hot Start auto-off (idle timeout)")
+                else:
+                    pf = state['puck_f']; tgt = state.get('standby_f', 180.0)
+                    if pf < tgt - 5 and not state['heater']:
+                        hw.set_heater(True); state['heater'] = True
+                    elif pf > tgt + 5 and state['heater']:
+                        hw.set_heater(False); state['heater'] = False
+        else:
+            state['standby_remaining_s'] = 0
+        time.sleep(1.0)
 
 
 def humidity_pid_loop():
